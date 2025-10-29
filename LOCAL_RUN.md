@@ -45,13 +45,54 @@ expiry_days = 30
 
 [broker]
 type = "angel"  # or "fyers"
+
+# Angel One SmartAPI Configuration
 api_key = "YOUR_API_KEY"
-access_token = "YOUR_ACCESS_TOKEN"
-client_id = "YOUR_CLIENT_ID"
-api_secret = "YOUR_API_SECRET"
+client_id = "YOUR_CLIENT_ID"  # e.g., "BBGV1001"
+username = "YOUR_CLIENT_ID"  # Usually same as client_id
+pwd = "YOUR_TRADING_PIN"  # Your trading pin
+token = "YOUR_TOTP_QR_SECRET"  # TOTP QR secret for generating OTP
+# Note: access_token is generated dynamically via session management
+
+# Fyers Configuration (if using Fyers)
+# api_secret = "YOUR_API_SECRET"  # Required for Fyers
+# access_token = "YOUR_ACCESS_TOKEN"  # For Fyers
 ```
 
-**Note**: For local testing, you can use placeholder broker credentials if you don't have real API keys yet.
+#### SmartAPI Setup for Angel One
+
+**Getting Your Credentials**:
+
+1. **API Key**: 
+   - Visit [Angel One SmartAPI Developer Portal](https://smartapi.angelone.in/)
+   - Login with your Angel One trading account
+   - Create an app to get your `api_key`
+
+2. **Client ID**: 
+   - Your user ID (e.g., "BBGV1001")
+   - Same as your Angel One trading account ID
+
+3. **Trading Pin**: 
+   - The PIN you use for trading on Angel One platform
+   - This is the `pwd` field
+
+4. **TOTP Token**: 
+   - Enable TOTP authentication in your Angel One account
+   - Scan QR code with authenticator app (Google Authenticator, Authy)
+   - Extract the secret key from the QR code or authenticator app
+   - This is the `token` field
+
+**Troubleshooting SmartAPI**:
+
+- If session generation fails, verify:
+  - API key is correct
+  - Client ID matches your account
+  - Trading pin is correct
+  - TOTP token is valid and synchronized
+- Session tokens expire - use "Refresh Broker Session" button in Settings tab
+- Check logs in `logs/errors.log` for detailed error messages
+
+**Note**: For local testing without real API credentials, the system will fail at first API call. Ensure all credentials are correctly configured before attempting to place orders.
 
 ### Step 3: Verify Configuration
 
@@ -205,12 +246,37 @@ pwd  # Check current directory
 cd ..  # Navigate to project root if needed
 ```
 
-### Issue: Broker connection fails
+### Issue: Broker connection fails (SmartAPI)
 
-**Solution**: For local testing, placeholder broker implementations are fine. Real API integration requires:
-1. Valid broker API credentials
-2. Full broker SDK implementation
-3. Testing in sandbox/paper trading mode first
+**Solution**: For Angel One SmartAPI integration:
+
+1. **Session Generation Fails**:
+   - Verify `api_key` is correct (from SmartAPI Developer Portal)
+   - Check `username` and `client_id` match your Angel One account
+   - Ensure `pwd` (trading pin) is correct
+   - Verify `token` (TOTP secret) is valid and synchronized
+   - Use "Refresh Broker Session" button in Settings tab
+
+2. **TOTP Token Issues**:
+   - Make sure authenticator app time is synchronized
+   - Regenerate TOTP if token seems invalid
+   - Extract secret key directly from QR code or authenticator app
+
+3. **Symbol Lookup Fails**:
+   - Check that symbol format is correct: `NIFTY{DD}{MON}{YY}{STRIKE}{CE/PE}`
+   - Ensure symbol exists in SmartAPI symbol master
+   - Verify exchange code is "NFO" for options
+
+4. **Order Placement Errors**:
+   - Check order parameters (price, quantity, order type)
+   - Verify sufficient margin/balance
+   - Ensure market is open (for LIVE orders)
+   - Check logs in `logs/errors.log` for detailed error messages
+
+5. **Token Expiry**:
+   - Sessions expire periodically
+   - Use "Refresh Broker Session" button before placing orders
+   - System will auto-refresh on API calls but may fail if token expired
 
 ## Testing Workflow
 

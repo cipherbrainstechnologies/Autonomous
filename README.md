@@ -104,10 +104,18 @@ expiry_days = 30
 
 [broker]
 type = "angel"  # or "fyers"
+
+# Angel One SmartAPI Configuration
 api_key = "YOUR_API_KEY"
-access_token = "YOUR_ACCESS_TOKEN"
-client_id = "YOUR_CLIENT_ID"
-api_secret = "YOUR_API_SECRET"  # Required for Fyers
+client_id = "YOUR_CLIENT_ID"  # e.g., "BBGV1001"
+username = "YOUR_CLIENT_ID"  # Usually same as client_id
+pwd = "YOUR_TRADING_PIN"  # Your trading pin
+token = "YOUR_TOTP_QR_SECRET"  # TOTP QR secret for generating OTP
+# Note: access_token is generated dynamically via session management
+
+# Fyers Configuration (if using Fyers)
+# api_secret = "YOUR_API_SECRET"  # Required for Fyers
+# access_token = "YOUR_ACCESS_TOKEN"  # For Fyers
 ```
 
 5. **Configure strategy parameters**
@@ -216,15 +224,61 @@ The backtesting engine allows you to test the strategy on historical data:
 
 ## 🔌 Broker Integration
 
-### Current Status
+### Angel One SmartAPI
 
-The broker connector provides abstract interfaces for:
-- **Angel One**: SmartAPI integration (placeholder - requires implementation)
-- **Fyers**: Fyers API integration (placeholder - requires implementation)
+The system includes full SmartAPI-Python integration for Angel One:
+
+#### Setup Instructions
+
+1. **Obtain API Credentials**:
+   - Login to [Angel One SmartAPI Developer Portal](https://smartapi.angelone.in/)
+   - Create an app and get your `api_key`
+   - Note your `client_id` (user ID)
+
+2. **Configure TOTP Authentication**:
+   - Enable TOTP (Time-based One-Time Password) in your Angel One account
+   - Scan the QR code with an authenticator app (Google Authenticator, Authy, etc.)
+   - Copy the TOTP secret key (or extract from QR code)
+   - Add the secret to `secrets.toml` as `token`
+
+3. **Configure Trading Pin**:
+   - Your trading pin is the PIN you use for trading on the Angel One platform
+   - Add this to `secrets.toml` as `pwd`
+
+4. **Session Management**:
+   - Sessions are automatically generated on first API call
+   - Use the "Refresh Broker Session" button in the Settings tab to manually refresh
+   - Sessions automatically refresh when tokens expire
+
+#### SmartAPI Features Implemented
+
+- ✅ Session generation with TOTP authentication
+- ✅ Automatic token refresh
+- ✅ Symbol token lookup from symbol master
+- ✅ Order placement (MARKET and LIMIT)
+- ✅ Position tracking
+- ✅ Order cancellation and modification
+- ✅ Order status checking
+- ✅ Comprehensive error handling and logging
+
+#### Symbol Format
+
+NIFTY options symbols must be formatted as: `NIFTY{DD}{MON}{YY}{STRIKE}{CE/PE}`
+
+Example: `NIFTY29OCT2419000CE` for NIFTY 19000 Call expiring 29 Oct 2024
+
+**Note**: The system currently uses a placeholder expiry date. In production, you should:
+- Fetch current NIFTY expiry dates from market data
+- Automatically select the nearest expiry
+- Format the symbol accordingly
+
+### Fyers API
+
+Fyers integration is available as a placeholder. Full implementation pending.
 
 ### Adding Broker Implementation
 
-To implement a broker:
+To implement a new broker:
 
 1. Extend the `BrokerInterface` class in `engine/broker_connector.py`
 2. Implement required methods:
@@ -309,10 +363,11 @@ python main.py
 
 ## ⚠️ Important Notes
 
-1. **Broker API Integration**: Current broker implementations are placeholders. Full integration requires:
-   - Broker API documentation
-   - API credentials and access tokens
-   - Testing in paper/sandbox environment first
+1. **Broker API Integration**: 
+   - **Angel One SmartAPI**: Fully implemented and ready for use (after configuration)
+   - **Fyers**: Placeholder implementation - requires full integration
+   - Always test in paper trading/sandbox environment first
+   - Ensure TOTP token is kept secure and not shared
 
 2. **Risk Management**: This system is for educational purposes. Always:
    - Test thoroughly in paper trading mode

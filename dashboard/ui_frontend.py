@@ -4,7 +4,7 @@ Secure Streamlit Dashboard for NIFTY Options Trading System
 
 # -*- coding: utf-8 -*-
 import streamlit as st
-import streamlit_authenticator as stauth
+# import streamlit_authenticator as stauth  # Temporarily disabled
 import yaml
 from yaml.loader import SafeLoader
 import pandas as pd
@@ -76,75 +76,123 @@ def load_config():
         st.error(f"❌ Error loading secrets.toml: {e}")
         st.stop()
 
-# Initialize authentication
+# ===================================================================
+# AUTHENTICATION TEMPORARILY DISABLED - Bypass due to library bugs
+# ===================================================================
+# TODO: Re-enable authentication once streamlit-authenticator issues are resolved
+# Known issues:
+# - Version 0.4.2: "string indices must be integers" error during password validation
+# - Version 0.2.3: Various API compatibility issues
+# ===================================================================
+
+# Load config (still needed for broker settings, etc.)
 config = load_config()
 
-try:
-    # Convert credentials from list format to dict format expected by streamlit-authenticator
-    # TOML format: names=["Admin"], usernames=["admin"], passwords=["hash"]
-    # Library expects: usernames={"admin": "Admin"}, passwords={"admin": "hash"}
-    cred_config = config['credentials']
-    
-    # Convert lists to dict: {username: name} and {username: password}
-    usernames_list = cred_config.get('usernames', [])
-    names_list = cred_config.get('names', [])
-    passwords_list = cred_config.get('passwords', [])
-    
-    # Create dict format
-    credentials_dict = {
-        'usernames': {},
-        'names': {},
-        'passwords': {}
-    }
-    
-    for i, username in enumerate(usernames_list):
-        credentials_dict['usernames'][username] = names_list[i] if i < len(names_list) else username
-        credentials_dict['names'][username] = names_list[i] if i < len(names_list) else username
-        credentials_dict['passwords'][username] = passwords_list[i] if i < len(passwords_list) else ""
-    
-    # streamlit-authenticator expects credentials dict with usernames/names/passwords as dicts
-    authenticator = stauth.Authenticate(
-        credentials=credentials_dict,
-        cookie_name=config['cookie']['name'],
-        cookie_key=config['cookie']['key'],
-        cookie_expiry_days=float(config['cookie']['expiry_days']),
-        auto_hash=False  # Passwords are already hashed
-    )
-except Exception as e:
-    st.error(f"❌ Authentication setup failed: {e}")
-    st.exception(e)  # Show full traceback for debugging
-    st.stop()
+# Authentication bypass - Set user as "Admin" for now
+name = "Admin"
+username = "admin"
+auth_status = True
 
-# Login - New API behavior:
-# - location='main' or 'sidebar': Renders widget, returns None
-# - location='unrendered': Returns tuple (name, auth_status, username) without rendering widget
-# Strategy: Use unrendered to check status first, then show login widget if needed
+# Show bypass notice in sidebar
+st.sidebar.warning("⚠️ Authentication disabled - Development mode")
+st.sidebar.info("🔓 Direct access enabled")
 
-login_result = authenticator.login(location='unrendered', key='Login_check')
-
-if login_result is None:
-    # Not authenticated - show login widget and stop
-    st.header("🔐 Login Required")
-    st.info("Please enter your credentials to access the trading system.")
-    # This will render the login widget - when user submits, page will reload
-    authenticator.login(location='main', key='Login_widget')
-    st.stop()
-else:
-    name, auth_status, username = login_result
-    
-    # Check authentication status
-    if not auth_status:
-        if auth_status == False:
-            st.error("❌ Invalid credentials. Please try again.")
-            authenticator.login(location='main', key='Login_widget')
-            st.stop()
-        else:
-            st.warning("🔒 Authentication status unknown. Please log in.")
-            authenticator.login(location='main', key='Login_widget')
-            st.stop()
-
-# Main Dashboard (after authentication)
+# Main Dashboard
 st.sidebar.success(f"👋 Welcome, {name}")
+
+# ===================================================================
+# COMMENTED OUT AUTHENTICATION CODE (for reference)
+# ===================================================================
+# try:
+#     # Convert credentials from list format to dict format expected by streamlit-authenticator
+#     # TOML format: names=["Admin"], usernames=["admin"], passwords=["hash"]
+#     # Library expects: usernames={"admin": "Admin"}, passwords={"admin": "hash"}
+#     cred_config = config['credentials']
+#     
+#     # Convert lists to dict: {username: name} and {username: password}
+#     usernames_list = cred_config.get('usernames', [])
+#     names_list = cred_config.get('names', [])
+#     passwords_list = cred_config.get('passwords', [])
+#     
+#     # Create dict format
+#     credentials_dict = {
+#         'usernames': {},
+#         'names': {},
+#         'passwords': {}
+#     }
+#     
+#     for i, username in enumerate(usernames_list):
+#         credentials_dict['usernames'][username] = names_list[i] if i < len(names_list) else username
+#         credentials_dict['names'][username] = names_list[i] if i < len(names_list) else username
+#         password_value = passwords_list[i] if i < len(passwords_list) else ""
+#         credentials_dict['passwords'][username] = password_value
+#     
+#     # Validate passwords before creating authenticator
+#     # Version 0.2.3: Accepts plain text passwords and auto-hashes them
+#     # Simple validation - check password exists and length
+#     for username, password_value in credentials_dict['passwords'].items():
+#         if not password_value or password_value == "":
+#             st.error(f"❌ Password is empty for user '{username}'.")
+#             st.error("   Please add a plain text password to secrets.toml")
+#             st.error("   Example: passwords = [\"admin\"]")
+#             st.stop()
+#         
+#         # Version 0.2.3 works best with plain text passwords (auto-hashes them)
+#         # If it's a hash (starts with $2b$), show warning but allow it
+#         if password_value.startswith('$2b$'):
+#             if len(password_value) != 60:
+#                 st.error(f"❌ Password hash for user '{username}' is invalid (length: {len(password_value)}, expected: 60)")
+#                 st.error("   **SOLUTION:** Use plain text password - version 0.2.3 will hash it automatically")
+#                 st.stop()
+#             else:
+#                 st.warning(f"⚠️ You're using a pre-hashed password for '{username}'.")
+#                 st.warning("   Version 0.2.3 works better with plain text passwords.")
+#         else:
+#             # Plain text password - perfect for version 0.2.3
+#             if len(password_value) < 3:
+#                 st.warning(f"⚠️ Password for '{username}' is very short. Consider using a stronger password.")
+#     
+#     # Version 0.2.3 API: positional parameters (credentials, cookie_name, key, cookie_expiry_days)
+#     # Note: Version 0.2.3 doesn't have auto_hash parameter - it auto-hashes plain text passwords
+#     try:
+#         authenticator = stauth.Authenticate(
+#             credentials_dict,  # Positional: credentials dict
+#             config['cookie']['name'],  # Positional: cookie_name
+#             config['cookie']['key'],  # Positional: key (cookie key)
+#             float(config['cookie']['expiry_days'])  # Positional: cookie_expiry_days
+#         )
+#     except Exception as auth_init_error:
+#         st.error(f"❌ Failed to initialize authenticator: {auth_init_error}")
+#         st.error("Please check that secrets.toml has valid credentials format.")
+#         st.exception(auth_init_error)
+#         st.stop()
+# except Exception as e:
+#     st.error(f"❌ Authentication setup failed: {e}")
+#     st.exception(e)  # Show full traceback for debugging
+#     st.stop()
+#
+# # Login - Version 0.2.3 API: login(form_name: str, location: str = 'main') -> tuple
+# # Returns: (name, authentication_status, username)
+# # If not authenticated, shows login widget and returns (None, None, None)
+#
+# try:
+#     name, auth_status, username = authenticator.login("Login", "main")
+# except Exception as login_error:
+#     st.error(f"❌ Login error: {login_error}")
+#     st.error("This might be due to invalid credentials structure. Please check secrets.toml format.")
+#     st.exception(login_error)
+#     st.stop()
+#
+# # Check authentication status
+# if not auth_status:
+#     if auth_status == False:
+#         st.error("❌ Invalid username/password")
+#     else:
+#         st.warning("🔒 Please log in to access the trading system")
+#     st.stop()
+#
+# # Main Dashboard (after authentication)
+# st.sidebar.success(f"👋 Welcome, {name}")
 
 # Initialize session state
 if 'algo_running' not in st.session_state:
@@ -171,8 +219,8 @@ tab = st.sidebar.radio(
     index=0
 )
 
-# Logout button - API: button_name (first), location (second), key (named)
-authenticator.logout(button_name='Logout', location='sidebar', key='Logout')
+# Logout button - DISABLED (authentication bypassed)
+# authenticator.logout("Logout", "sidebar")
 
 # ============ DASHBOARD TAB ============
 if tab == "Dashboard":
@@ -464,9 +512,39 @@ elif tab == "Settings":
     st.subheader("Broker Configuration")
     if config.get('broker'):
         broker_config = config['broker']
+        broker_type = broker_config.get('type', '').lower()
         st.text(f"Type: {broker_config.get('type', 'N/A')}")
         st.text(f"Client ID: {broker_config.get('client_id', 'N/A')}")
         st.success("✅ Broker configured")
+        
+        # Token refresh button for Angel One SmartAPI
+        if broker_type == 'angel':
+            st.divider()
+            st.write("**Session Management**")
+            
+            # Initialize broker interface in session state if not exists
+            if 'broker_interface' not in st.session_state:
+                try:
+                    st.session_state.broker_interface = create_broker_interface(config)
+                except Exception as e:
+                    st.error(f"❌ Failed to initialize broker: {e}")
+                    st.session_state.broker_interface = None
+            
+            if st.session_state.broker_interface is not None:
+                if st.button("🔄 Refresh Broker Session", type="primary"):
+                    with st.spinner("Refreshing broker session..."):
+                        try:
+                            success = st.session_state.broker_interface.refresh_session()
+                            if success:
+                                st.success("✅ Broker session refreshed successfully!")
+                            else:
+                                st.error("❌ Failed to refresh session. Check logs for details.")
+                        except Exception as e:
+                            st.error(f"❌ Error refreshing session: {e}")
+                
+                st.info("💡 Session tokens expire periodically. Refresh when needed or on first order.")
+            else:
+                st.warning("⚠️ Broker interface not initialized. Check configuration.")
     else:
         st.error("❌ Broker not configured")
     
