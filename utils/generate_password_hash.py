@@ -24,8 +24,9 @@ def generate_password_hash(password: str = None) -> str:
             print("❌ Passwords do not match!")
             return None
     
-    hasher = stauth.Hasher([password])
-    hashed = hasher.generate()[0]
+    # New API: Hasher() with no args, then call hash() method
+    hasher = stauth.Hasher()
+    hashed = hasher.hash(password)
     
     return hashed
 
