@@ -50,6 +50,64 @@ class MarketDataProvider:
         
         logger.info("MarketDataProvider initialized")
     
+    def _is_candle_complete(self, candle_time: datetime, timeframe_minutes: int) -> bool:
+        """
+        Check if a candle is complete based on current time.
+        
+        A candle is complete when the current time has passed the next candle's start time.
+        Example:
+        - 15m candle at 10:30 is complete at 10:45 (15 min after start)
+        - 1h candle at 10:00 is complete at 11:00 (1 hour after start)
+        
+        Args:
+            candle_time: Start time of the candle (datetime)
+            timeframe_minutes: Timeframe in minutes (15 or 60)
+        
+        Returns:
+            True if candle is complete, False if still forming
+        """
+        current_time = datetime.now()
+        next_candle_start = candle_time + timedelta(minutes=timeframe_minutes)
+        
+        # Candle is complete if current time >= next candle start time
+        return current_time >= next_candle_start
+    
+    def _get_complete_candles(self, df: pd.DataFrame, timeframe_minutes: int) -> pd.DataFrame:
+        """
+        Filter DataFrame to include only complete candles.
+        Excludes the last candle if it's still forming.
+        
+        Args:
+            df: DataFrame with candles (must have 'Date' column)
+            timeframe_minutes: Timeframe in minutes (15 for 15m, 60 for 1h)
+        
+        Returns:
+            DataFrame with only complete candles
+        """
+        if df.empty:
+            return df
+        
+        # Ensure Date is datetime
+        if not pd.api.types.is_datetime64_any_dtype(df['Date']):
+            df['Date'] = pd.to_datetime(df['Date'])
+        
+        # Check each candle and filter out incomplete ones
+        complete_candles = []
+        
+        for idx, row in df.iterrows():
+            candle_time = row['Date']
+            if self._is_candle_complete(candle_time, timeframe_minutes):
+                complete_candles.append(row)
+            else:
+                # Once we hit an incomplete candle, stop (remaining are incomplete)
+                logger.debug(f"Excluding incomplete candle at {candle_time} ({timeframe_minutes}m timeframe)")
+                break
+        
+        if complete_candles:
+            return pd.DataFrame(complete_candles).reset_index(drop=True)
+        else:
+            return pd.DataFrame(columns=df.columns)
+    
     def _rate_limit(self):
         """Ensure rate limiting (1 request per second)."""
         current_time = time.time()
@@ -270,9 +328,16 @@ class MarketDataProvider:
             # Call SmartAPI getCandleData
             response = self.smart_api.getCandleData(params)
             
+            # Check if response is valid
+            if not isinstance(response, dict):
+                logger.error(f"Historical candles API returned unexpected type: {type(response)}")
+                logger.debug(f"Response: {str(response)[:200]}")
+                return None
+            
             if response.get('status') == False:
                 error_msg = response.get('message', 'Unknown error')
-                logger.error(f"Historical candles fetch failed: {error_msg}")
+                error_code = response.get('errorcode', '')
+                logger.error(f"Historical candles fetch failed: {error_msg} (code: {error_code})")
                 return None
             
             # Parse response
@@ -282,11 +347,30 @@ class MarketDataProvider:
             # If data is not a list, it might be a dict with nested structure
             if isinstance(data, dict):
                 # Check for common nested formats
-                data = data.get('fetched', data.get('data', []))
+                # Some APIs return: {"data": {"fetched": [...]}}
+                # Others return: {"data": [...]} directly
+                if 'fetched' in data:
+                    data = data.get('fetched', [])
+                elif 'data' in data:
+                    data = data.get('data', [])
+                else:
+                    # Try to extract any list from the dict
+                    for key, value in data.items():
+                        if isinstance(value, list) and len(value) > 0:
+                            data = value
+                            logger.debug(f"Found data in nested key '{key}'")
+                            break
+                    
+                    if not isinstance(data, list):
+                        logger.warning(f"Could not extract list from data dict. Keys: {list(data.keys())}")
+                        data = []
             
             if not data or len(data) == 0:
                 logger.warning("No historical candle data returned")
-                logger.debug(f"Response structure: {list(response.keys()) if isinstance(response, dict) else type(response)}")
+                logger.debug(f"Response keys: {list(response.keys()) if isinstance(response, dict) else 'N/A'}")
+                if isinstance(response.get('data'), dict):
+                    logger.debug(f"Response data keys: {list(response.get('data', {}).keys())}")
+                # This might be normal if market is closed or no data for the time range
                 return None
             
             # Convert to DataFrame
@@ -320,13 +404,42 @@ class MarketDataProvider:
                     return None
             
             # Map columns to standard format
-            if 'time' in df.columns:
-                df['Date'] = pd.to_datetime(df['time'])
-            elif 'datetime' in df.columns:
-                df['Date'] = pd.to_datetime(df['datetime'])
-            else:
-                logger.warning("No timestamp column found in historical data")
-                return None
+            # SmartAPI getCandleData may return different timestamp formats
+            timestamp_found = False
+            
+            # Try common timestamp column names
+            timestamp_columns = ['time', 'datetime', 'date', 'timestamp', 'timestamp_local', 'timestamp_utc']
+            for col in timestamp_columns:
+                if col in df.columns:
+                    try:
+                        df['Date'] = pd.to_datetime(df[col])
+                        timestamp_found = True
+                        logger.debug(f"Using '{col}' column as timestamp")
+                        break
+                    except Exception as e:
+                        logger.debug(f"Failed to parse '{col}' as timestamp: {e}")
+                        continue
+            
+            # If no timestamp column found, check if first column is datetime-like
+            if not timestamp_found and len(df.columns) > 0:
+                first_col = df.columns[0]
+                try:
+                    df['Date'] = pd.to_datetime(df[first_col])
+                    timestamp_found = True
+                    logger.debug(f"Using first column '{first_col}' as timestamp")
+                except Exception:
+                    pass
+            
+            if not timestamp_found:
+                logger.warning(f"No timestamp column found in historical data. Available columns: {list(df.columns)}")
+                logger.debug(f"Data sample: {df.head(2) if not df.empty else 'Empty DataFrame'}")
+                # Try to use index as timestamp if it's datetime
+                if isinstance(df.index, pd.DatetimeIndex):
+                    df['Date'] = df.index
+                    timestamp_found = True
+                    logger.debug("Using DataFrame index as timestamp")
+                else:
+                    return None
             
             # Ensure we have OHLC columns
             column_mapping = {
@@ -480,9 +593,19 @@ class MarketDataProvider:
                     self._data_1h = self._data_1h.drop_duplicates(subset=['Date'], keep='last')
                     self._data_1h = self._data_1h.sort_values('Date').reset_index(drop=True)
         
-        return self._data_1h.tail(window_hours).copy() if not self._data_1h.empty else pd.DataFrame(
+        # Get all candles and filter to complete ones only
+        all_candles = self._data_1h.tail(window_hours).copy() if not self._data_1h.empty else pd.DataFrame(
             columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
         )
+        
+        # Exclude incomplete candles (1-hour timeframe = 60 minutes)
+        complete_candles = self._get_complete_candles(all_candles, timeframe_minutes=60)
+        
+        if len(complete_candles) < len(all_candles):
+            excluded_count = len(all_candles) - len(complete_candles)
+            logger.info(f"Excluded {excluded_count} incomplete 1-hour candle(s) from strategy data")
+        
+        return complete_candles
     
     def get_15m_data(self, window_hours: int = 12) -> pd.DataFrame:
         """
@@ -534,9 +657,20 @@ class MarketDataProvider:
                     self._data_15m = self._data_15m.drop_duplicates(subset=['Date'], keep='last')
                     self._data_15m = self._data_15m.sort_values('Date').reset_index(drop=True)
         
-        return self._data_15m.tail((window_hours * 60) // 15).copy() if not self._data_15m.empty else pd.DataFrame(
+        # Get all candles and filter to complete ones only
+        max_candles = (window_hours * 60) // 15
+        all_candles = self._data_15m.tail(max_candles).copy() if not self._data_15m.empty else pd.DataFrame(
             columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
         )
+        
+        # Exclude incomplete candles (15-minute timeframe)
+        complete_candles = self._get_complete_candles(all_candles, timeframe_minutes=15)
+        
+        if len(complete_candles) < len(all_candles):
+            excluded_count = len(all_candles) - len(complete_candles)
+            logger.info(f"Excluded {excluded_count} incomplete 15-minute candle(s) from strategy data")
+        
+        return complete_candles
     
     def refresh_data(self):
         """
@@ -568,8 +702,13 @@ class MarketDataProvider:
                 # Re-aggregate from historical data
                 self._data_15m = self._aggregate_to_15m(hist_data)
                 self._data_1h = self._aggregate_to_1h(hist_data)
+                
+                # Note: Historical data aggregation may include the current incomplete candle
+                # This will be filtered out when get_15m_data() or get_1h_data() is called
+                logger.debug("Aggregated from historical data - incomplete candles will be filtered in get methods")
             else:
                 # Fallback: Update with current snapshot
+                # Only create new candle if period has changed (new candle started)
                 if self._data_15m.empty or self._data_15m.iloc[-1]['Date'] < rounded_15m:
                     new_row_15m = pd.DataFrame([{
                         'Date': rounded_15m,
@@ -581,6 +720,13 @@ class MarketDataProvider:
                     }])
                     self._data_15m = pd.concat([self._data_15m, new_row_15m], ignore_index=True)
                     self._data_15m = self._data_15m.drop_duplicates(subset=['Date'], keep='last')
+                else:
+                    # Update existing incomplete candle
+                    last_idx = len(self._data_15m) - 1
+                    self._data_15m.loc[last_idx, 'High'] = max(self._data_15m.loc[last_idx, 'High'], ohlc.get('high', 0))
+                    self._data_15m.loc[last_idx, 'Low'] = min(self._data_15m.loc[last_idx, 'Low'], ohlc.get('low', 0))
+                    self._data_15m.loc[last_idx, 'Close'] = ohlc.get('ltp', ohlc.get('close', 0))
+                    self._data_15m.loc[last_idx, 'Volume'] = ohlc.get('tradeVolume', 0)
                 
                 if self._data_1h.empty or self._data_1h.iloc[-1]['Date'] < rounded_1h:
                     new_row_1h = pd.DataFrame([{
@@ -593,8 +739,54 @@ class MarketDataProvider:
                     }])
                     self._data_1h = pd.concat([self._data_1h, new_row_1h], ignore_index=True)
                     self._data_1h = self._data_1h.drop_duplicates(subset=['Date'], keep='last')
+                else:
+                    # Update existing incomplete candle
+                    last_idx = len(self._data_1h) - 1
+                    self._data_1h.loc[last_idx, 'High'] = max(self._data_1h.loc[last_idx, 'High'], ohlc.get('high', 0))
+                    self._data_1h.loc[last_idx, 'Low'] = min(self._data_1h.loc[last_idx, 'Low'], ohlc.get('low', 0))
+                    self._data_1h.loc[last_idx, 'Close'] = ohlc.get('ltp', ohlc.get('close', 0))
+                    self._data_1h.loc[last_idx, 'Volume'] = ohlc.get('tradeVolume', 0)
             
             logger.info("Market data refreshed successfully")
+    
+    def get_candle_status(self, timeframe: str = "15m") -> Dict:
+        """
+        Get status of current candle (complete or incomplete).
+        
+        Args:
+            timeframe: "15m" or "1h"
+        
+        Returns:
+            Dictionary with candle status information:
+            {
+                'current_candle_time': datetime,
+                'is_complete': bool,
+                'next_candle_start': datetime,
+                'time_remaining_minutes': float
+            }
+        """
+        current_time = datetime.now()
+        
+        if timeframe == "15m":
+            rounded_time = current_time.replace(minute=(current_time.minute // 15) * 15, second=0, microsecond=0)
+            timeframe_minutes = 15
+        elif timeframe == "1h":
+            rounded_time = current_time.replace(minute=0, second=0, microsecond=0)
+            timeframe_minutes = 60
         else:
-            logger.warning("Failed to refresh market data")
+            return {
+                'error': f"Invalid timeframe: {timeframe}. Use '15m' or '1h'"
+            }
+        
+        next_candle_start = rounded_time + timedelta(minutes=timeframe_minutes)
+        is_complete = self._is_candle_complete(rounded_time, timeframe_minutes)
+        time_remaining = (next_candle_start - current_time).total_seconds() / 60.0 if not is_complete else 0.0
+        
+        return {
+            'current_candle_time': rounded_time,
+            'is_complete': is_complete,
+            'next_candle_start': next_candle_start,
+            'time_remaining_minutes': max(0.0, time_remaining),
+            'timeframe': timeframe
+        }
 

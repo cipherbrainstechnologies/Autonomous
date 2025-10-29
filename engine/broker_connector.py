@@ -215,14 +215,28 @@ class AngelOneBroker(BrokerInterface):
         try:
             feed_token_data = self.smart_api.getfeedToken()
             
+            # Handle case where response might be a string or unexpected format
+            if isinstance(feed_token_data, str):
+                logger.error(f"Feed token API returned string instead of dict: {feed_token_data[:100]}")
+                return False
+            
+            if not isinstance(feed_token_data, dict):
+                logger.error(f"Feed token API returned unexpected type: {type(feed_token_data)}")
+                return False
+            
             if feed_token_data.get('status') == False:
                 logger.error(f"Failed to get feed token: {feed_token_data.get('message')}")
                 return False
             
             response_data = feed_token_data.get('data', {})
             self.feed_token = response_data.get('feedToken')
-            logger.info("Feed token retrieved successfully")
-            return True
+            
+            if self.feed_token:
+                logger.info("Feed token retrieved successfully")
+                return True
+            else:
+                logger.warning("Feed token not found in response")
+                return False
             
         except Exception as e:
             logger.exception(f"Error getting feed token: {e}")
@@ -284,8 +298,30 @@ class AngelOneBroker(BrokerInterface):
             }
             
             import requests
-            response = requests.post(url, json=request_params, headers=headers)
-            response_data = response.json()
+            response = requests.post(url, json=request_params, headers=headers, timeout=10)
+            
+            # Check response status code
+            if response.status_code != 200:
+                logger.error(f"Symbol search API returned status code {response.status_code}: {response.text[:200]}")
+                return None
+            
+            # Check if response is JSON
+            content_type = response.headers.get('content-type', '').lower()
+            if 'application/json' not in content_type:
+                logger.error(f"Symbol search API returned non-JSON response (content-type: {content_type}): {response.text[:200]}")
+                return None
+            
+            # Try to parse JSON
+            try:
+                response_data = response.json()
+            except ValueError as json_error:
+                logger.error(f"Failed to parse JSON response: {json_error}")
+                logger.debug(f"Response text: {response.text[:500]}")
+                return None
+            
+            if not isinstance(response_data, dict):
+                logger.error(f"Symbol search API returned unexpected response type: {type(response_data)}")
+                return None
             
             if response_data.get('status') == False or response_data.get('success') == False:
                 error_msg = response_data.get('message', 'Unknown error')
@@ -294,6 +330,9 @@ class AngelOneBroker(BrokerInterface):
             
             return response_data
             
+        except requests.exceptions.RequestException as e:
+            logger.exception(f"Network error searching symbol {symbol} on {exchange}: {e}")
+            return None
         except Exception as e:
             logger.exception(f"Error searching symbol {symbol} on {exchange}: {e}")
             return None
