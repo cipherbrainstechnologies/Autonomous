@@ -115,15 +115,33 @@ except Exception as e:
     st.exception(e)  # Show full traceback for debugging
     st.stop()
 
-# Login - API changed: location is first parameter, key is named parameter
-name, auth_status, username = authenticator.login(location='main', key='Login')
+# Login - New API behavior:
+# - location='main' or 'sidebar': Renders widget, returns None
+# - location='unrendered': Returns tuple (name, auth_status, username) without rendering widget
+# Strategy: Use unrendered to check status first, then show login widget if needed
 
-if not auth_status:
-    if auth_status == False:
-        st.error("❌ Invalid credentials")
-    else:
-        st.warning("🔒 Please log in to access the trading system")
+login_result = authenticator.login(location='unrendered', key='Login_check')
+
+if login_result is None:
+    # Not authenticated - show login widget and stop
+    st.header("🔐 Login Required")
+    st.info("Please enter your credentials to access the trading system.")
+    # This will render the login widget - when user submits, page will reload
+    authenticator.login(location='main', key='Login_widget')
     st.stop()
+else:
+    name, auth_status, username = login_result
+    
+    # Check authentication status
+    if not auth_status:
+        if auth_status == False:
+            st.error("❌ Invalid credentials. Please try again.")
+            authenticator.login(location='main', key='Login_widget')
+            st.stop()
+        else:
+            st.warning("🔒 Authentication status unknown. Please log in.")
+            authenticator.login(location='main', key='Login_widget')
+            st.stop()
 
 # Main Dashboard (after authentication)
 st.sidebar.success(f"👋 Welcome, {name}")
