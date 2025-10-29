@@ -375,7 +375,23 @@ class MarketDataProvider:
             
             # Convert to DataFrame
             try:
-                df = pd.DataFrame(data)
+                # SmartAPI historical data often returns list of lists:
+                # [ [timestamp, open, high, low, close, volume], ... ]
+                if isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
+                    expected_len = len(data[0])
+                    if expected_len >= 5:
+                        # Map first 6 columns if available
+                        cols = ['datetime', 'open', 'high', 'low', 'close']
+                        if expected_len >= 6:
+                            cols.append('volume')
+                        # Truncate/extend each row to match columns length
+                        normalized = [row[:len(cols)] + [None]*(len(cols)-len(row)) for row in data]
+                        df = pd.DataFrame(normalized, columns=cols)
+                    else:
+                        # Fallback to generic DataFrame
+                        df = pd.DataFrame(data)
+                else:
+                    df = pd.DataFrame(data)
             except Exception as e:
                 logger.error(f"Failed to convert response to DataFrame: {e}")
                 logger.debug(f"Data sample: {data[:2] if isinstance(data, list) else data}")
@@ -408,7 +424,7 @@ class MarketDataProvider:
             timestamp_found = False
             
             # Try common timestamp column names
-            timestamp_columns = ['time', 'datetime', 'date', 'timestamp', 'timestamp_local', 'timestamp_utc']
+            timestamp_columns = ['time', 'datetime', 'date', 'timestamp', 'timestamp_local', 'timestamp_utc', 0]
             for col in timestamp_columns:
                 if col in df.columns:
                     try:
@@ -447,7 +463,12 @@ class MarketDataProvider:
                 'high': 'High',
                 'low': 'Low',
                 'close': 'Close',
-                'volume': 'Volume'
+                'volume': 'Volume',
+                1: 'Open',
+                2: 'High',
+                3: 'Low',
+                4: 'Close',
+                5: 'Volume'
             }
             
             for old_col, new_col in column_mapping.items():

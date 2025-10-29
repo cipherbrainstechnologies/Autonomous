@@ -396,20 +396,91 @@ class AngelOneBroker(BrokerInterface):
         Returns:
             Formatted trading symbol
         """
-        # TODO: Implement logic to determine current expiry date
-        # For now, using a placeholder format
-        # In production, you would:
-        # 1. Fetch current NIFTY option expiry dates from market
-        # 2. Select the nearest expiry
-        # 3. Format as DDMMMYY (e.g., 29OCT24)
-        
+        # Determine current expiry date if not provided (weekly expiry every Tuesday)
         if expiry_date is None:
-            # Placeholder: This should be fetched from market data
-            # For now, return a format that user must ensure is correct
-            logger.warning("Expiry date not provided. Using placeholder format.")
-            expiry_date = "29OCT24"  # User must update this or implement expiry lookup
+            expiry_date = self._get_next_tuesday_expiry_ddmmmyy()
         
         return f"{symbol}{expiry_date}{strike}{direction}"
+
+    def _get_next_tuesday_expiry_ddmmmyy(self) -> str:
+        """
+        Calculate next Tuesday from today and return in DDMMMYY (e.g., 29OCT24).
+        If today is Tuesday before market close, use today.
+        """
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        weekday = now.weekday()  # Monday=0 ... Sunday=6
+        # Tuesday is 1
+        days_ahead = (1 - weekday) % 7
+        # If today is Tuesday and time is after market close (15:30), move to next Tuesday
+        market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        if days_ahead == 0 and now > market_close:
+            days_ahead = 7
+        next_tuesday = now + timedelta(days=days_ahead)
+        return next_tuesday.strftime('%d%b%y').upper()
+
+    def _get_next_tuesday_expiry_ddmmmyyyy(self) -> str:
+        """
+        Calculate next Tuesday from today and return in DDMMMYYYY (e.g., 29OCT2024) for APIs like optionGreek.
+        """
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        weekday = now.weekday()
+        days_ahead = (1 - weekday) % 7
+        market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        if days_ahead == 0 and now > market_close:
+            days_ahead = 7
+        next_tuesday = now + timedelta(days=days_ahead)
+        return next_tuesday.strftime('%d%b%Y').upper()
+
+    def get_option_greeks(self, underlying: str, expiry_date: Optional[str] = None) -> List[Dict]:
+        """
+        Fetch option Greeks (Delta, Gamma, Theta, Vega, IV) for an underlying & expiry.
+        Uses SmartAPI endpoint: /rest/secure/angelbroking/marketData/v1/optionGreek
+        Request body: {"name": "NIFTY", "expirydate": "25JAN2024"}
+        """
+        try:
+            if not self._ensure_session():
+                logger.error("Cannot fetch option Greeks: No valid session")
+                return []
+            if not self.auth_token:
+                logger.error("Auth token not available for option Greeks API")
+                return []
+            # Expiry date format for API is DDMMMYYYY
+            if expiry_date is None:
+                expiry_date = self._get_next_tuesday_expiry_ddmmmyyyy()
+            import requests
+            url = "https://apiconnect.angelone.in/rest/secure/angelbroking/marketData/v1/optionGreek"
+            headers = {
+                "Authorization": f"Bearer {self.auth_token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "X-UserType": "USER",
+                "X-SourceID": "WEB",
+                "X-ClientLocalIP": "192.168.1.1",
+                "X-ClientPublicIP": "192.168.1.1",
+                "X-MACAddress": "00:00:00:00:00:00",
+                "X-PrivateKey": self.api_key
+            }
+            payload = {"name": underlying, "expirydate": expiry_date}
+            resp = requests.post(url, json=payload, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                logger.error(f"Option Greeks API status {resp.status_code}: {resp.text[:200]}")
+                return []
+            ctype = resp.headers.get('content-type', '').lower()
+            if 'application/json' not in ctype:
+                logger.error(f"Option Greeks API non-JSON response: {ctype}")
+                return []
+            data = resp.json()
+            if not isinstance(data, dict) or data.get('status') is False:
+                logger.error(f"Option Greeks API error: {data.get('message') if isinstance(data, dict) else 'Unknown'}")
+                return []
+            greeks = data.get('data', []) or []
+            logger.info(f"Fetched {len(greeks)} option Greek rows for {underlying} {expiry_date}")
+            return greeks
+        except Exception as e:
+            logger.exception(f"Error fetching option Greeks: {e}")
+            return []
     
     def place_order(
         self,

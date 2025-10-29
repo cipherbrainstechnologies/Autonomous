@@ -20,7 +20,7 @@ timeframes:
 # Broker Configuration (overridden by secrets.toml)
 broker:
   type: "angel"       # Options: "angel", "fyers"
-  default_qty: 75     # Default quantity per trade
+  default_qty: 150     # Default quantity per trade (2 lots x 75)
 
 # Logging Configuration
 logging:

@@ -58,6 +58,8 @@ class LiveStrategyRunner:
         # Strategy config
         strategy_config = config.get('strategy', {})
         self.lot_size = config.get('lot_size', 75)
+        # Use broker.default_qty if provided; fallback to 2 lots
+        self.order_qty = config.get('broker', {}).get('default_qty', self.lot_size * 2)
         self.sl_points = strategy_config.get('sl', 30)
         self.rr_ratio = strategy_config.get('rr', 1.8)
         
@@ -224,7 +226,7 @@ class LiveStrategyRunner:
                 symbol="NIFTY",
                 strike=strike,
                 direction=direction,
-                quantity=self.lot_size,
+                quantity=self.order_qty,
                 order_type="MARKET"
             )
             
@@ -241,7 +243,7 @@ class LiveStrategyRunner:
                     direction=direction,
                     strike=strike,
                     entry_price=entry,
-                    quantity=self.lot_size,
+                    quantity=self.order_qty,
                     order_id=order_id,
                     status="OPEN",
                     reason=signal.get('reason', 'Inside Bar breakout')
@@ -259,7 +261,7 @@ class LiveStrategyRunner:
                     direction=direction,
                     strike=strike,
                     entry_price=entry,
-                    quantity=self.lot_size,
+                    quantity=self.order_qty,
                     order_id=None,
                     status="FAILED",
                     reason=f"Order failed: {error_msg}"
