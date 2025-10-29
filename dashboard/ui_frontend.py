@@ -2,6 +2,7 @@
 Secure Streamlit Dashboard for NIFTY Options Trading System
 """
 
+# -*- coding: utf-8 -*-
 import streamlit as st
 import streamlit_authenticator as stauth
 import yaml
@@ -10,6 +11,31 @@ import pandas as pd
 from datetime import datetime
 import os
 import sys
+
+# TOML support - use tomllib (Python 3.11+) or tomli package
+try:
+    import tomllib  # Python 3.11+
+except ImportError:
+    try:
+        import tomli as tomllib  # Fallback: tomli package
+    except ImportError:
+        # Last resort: use toml package (older API - different method signature)
+        try:
+            import toml
+            # Create a wrapper class to match tomllib API
+            class TomlWrapper:
+                @staticmethod
+                def load(file):
+                    # toml.load() expects text mode, not binary
+                    if hasattr(file, 'read'):
+                        content = file.read()
+                        if isinstance(content, bytes):
+                            content = content.decode('utf-8')
+                        return toml.loads(content)
+                    return toml.load(file)
+            tomllib = TomlWrapper()
+        except ImportError:
+            tomllib = None
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -37,28 +63,60 @@ def load_config():
         st.error("❌ secrets.toml not found. Please create it in .streamlit/ directory.")
         st.stop()
     
-    with open(secrets_path, 'r') as file:
-        config = yaml.load(file, Loader=SafeLoader)
-    return config
+    # Load TOML file (not YAML!)
+    if tomllib is None:
+        st.error("❌ TOML parser not available. Install with: pip install tomli")
+        st.stop()
+    
+    try:
+        with open(secrets_path, 'rb') as file:  # TOML requires binary mode
+            config = tomllib.load(file)
+        return config
+    except Exception as e:
+        st.error(f"❌ Error loading secrets.toml: {e}")
+        st.stop()
 
 # Initialize authentication
 config = load_config()
 
 try:
+    # Convert credentials from list format to dict format expected by streamlit-authenticator
+    # TOML format: names=["Admin"], usernames=["admin"], passwords=["hash"]
+    # Library expects: usernames={"admin": "Admin"}, passwords={"admin": "hash"}
+    cred_config = config['credentials']
+    
+    # Convert lists to dict: {username: name} and {username: password}
+    usernames_list = cred_config.get('usernames', [])
+    names_list = cred_config.get('names', [])
+    passwords_list = cred_config.get('passwords', [])
+    
+    # Create dict format
+    credentials_dict = {
+        'usernames': {},
+        'names': {},
+        'passwords': {}
+    }
+    
+    for i, username in enumerate(usernames_list):
+        credentials_dict['usernames'][username] = names_list[i] if i < len(names_list) else username
+        credentials_dict['names'][username] = names_list[i] if i < len(names_list) else username
+        credentials_dict['passwords'][username] = passwords_list[i] if i < len(passwords_list) else ""
+    
+    # streamlit-authenticator expects credentials dict with usernames/names/passwords as dicts
     authenticator = stauth.Authenticate(
-        config['credentials']['names'],
-        config['credentials']['usernames'],
-        config['credentials']['passwords'],
-        config['cookie']['name'],
-        config['cookie']['key'],
-        config['cookie']['expiry_days'],
+        credentials=credentials_dict,
+        cookie_name=config['cookie']['name'],
+        cookie_key=config['cookie']['key'],
+        cookie_expiry_days=float(config['cookie']['expiry_days']),
+        auto_hash=False  # Passwords are already hashed
     )
 except Exception as e:
     st.error(f"❌ Authentication setup failed: {e}")
+    st.exception(e)  # Show full traceback for debugging
     st.stop()
 
-# Login
-name, auth_status, username = authenticator.login("Login", "main")
+# Login - API changed: location is first parameter, key is named parameter
+name, auth_status, username = authenticator.login(location='main', key='Login')
 
 if not auth_status:
     if auth_status == False:
@@ -95,8 +153,8 @@ tab = st.sidebar.radio(
     index=0
 )
 
-# Logout button
-authenticator.logout("Logout", "sidebar")
+# Logout button - API: button_name (first), location (second), key (named)
+authenticator.logout(button_name='Logout', location='sidebar', key='Logout')
 
 # ============ DASHBOARD TAB ============
 if tab == "Dashboard":
@@ -342,6 +400,10 @@ elif tab == "Backtest":
                     except Exception as e:
                         st.error(f"❌ Backtest failed: {e}")
                         st.exception(e)
+        
+        except Exception as e:
+            st.error(f"❌ Error loading CSV file: {e}")
+            st.exception(e)
     
     else:
         st.info("ℹ️ Please upload a CSV file with historical OHLC data to run backtest")

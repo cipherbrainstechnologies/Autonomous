@@ -13,11 +13,16 @@ from pathlib import Path
 log_dir = Path("logs")
 log_dir.mkdir(exist_ok=True)
 
+# Configure logging with detailed format
+log_format = '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
+date_format = '%Y-%m-%d %H:%M:%S'
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format=log_format,
+    datefmt=date_format,
     handlers=[
-        logging.FileHandler(log_dir / 'errors.log'),
+        logging.FileHandler(log_dir / 'errors.log', encoding='utf-8'),
         logging.StreamHandler(sys.stdout)
     ]
 )

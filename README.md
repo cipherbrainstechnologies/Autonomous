@@ -75,6 +75,8 @@ cd nifty-options-trader
 pip install -r requirements.txt
 ```
 
+**Note**: Python 3.11+ includes TOML support. For Python < 3.11, `tomli` will be installed automatically.
+
 3. **Generate password hash and cookie key**
 
 ```bash
@@ -123,13 +125,34 @@ strategy:
     avoid_open_range: true
 ```
 
-6. **Start the dashboard**
+6. **Verify setup** (Optional but recommended)
 
 ```bash
-streamlit run dashboard/ui_frontend.py
+python verify_setup.py
+```
+
+This will check all dependencies, configuration, and setup.
+
+7. **Start the dashboard**
+
+```bash
+# Option 1: Direct run (recommended)
+python -m streamlit run dashboard/ui_frontend.py
+
+# Option 2: Use run script (with enhanced logging)
+# Windows:
+.\run_local.bat
+
+# Linux/Mac:
+chmod +x run_local.sh
+./run_local.sh
 ```
 
 The dashboard will open in your browser at `http://localhost:8501`
+
+**For detailed local run instructions and troubleshooting, see [LOCAL_RUN.md](LOCAL_RUN.md)**
+
+**Note**: If you get "streamlit is not recognized" error, use `python -m streamlit` instead. See [STREAMLIT_FIX.md](STREAMLIT_FIX.md) for details.
 
 ## 📖 Architecture Overview
 
