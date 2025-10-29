@@ -1,0 +1,98 @@
+# Cursor Project Intelligence – NIFTY Options Trading System
+
+## Overview
+This document is the source of truth for project-wide intelligence, decision history, user preferences, and implementation standards for the NIFTY Options Algo Trading System.
+
+## Project Structure
+
+```
+root/
+├── memory-bank/          # Core documentation and live knowledge base
+│   ├── architecture.md
+│   ├── flows/
+│   └── patterns/
+├── engine/              # Core trading strategy & logic
+├── dashboard/           # Streamlit UI
+├── config/              # Configuration files
+├── data/                # Historical data
+├── logs/                # Application logs
+└── .cursorrules         # This file (project intelligence rules)
+```
+
+## Memory Bank Protocol
+
+1. **Required Reads**: Every task must begin with reading all relevant files in the `memory-bank/` directory.
+2. **Live Updates**: Document all significant changes immediately.
+3. **Manual Triggers**: Use "update memory bank" to request or confirm memory alignment.
+
+## User Preferences
+
+| Area            | Preference                                  |
+|-----------------|---------------------------------------------|
+| Documentation   | Must be comprehensive, structured, current  |
+| Change Tracking | Document updates inline as they happen      |
+| Communication   | Clear, concise, and assumption-free         |
+| Language        | Use formal tone with declarative style      |
+
+## Implementation Patterns
+
+### Pattern: Inside Bar + Breakout Strategy
+- **Intent**: Detect consolidation patterns followed by momentum breakouts
+- **Use When**: Trading NIFTY options with defined risk-reward ratios
+- **Avoid When**: High volatility without clear patterns
+- **Risk**: False breakouts can occur; volume confirmation required
+
+### Pattern: Broker Abstraction Layer
+- **Intent**: Support multiple broker APIs through unified interface
+- **Use When**: Need flexibility to switch brokers or test strategies
+- **Avoid When**: Single broker commitment is permanent
+- **Risk**: API changes require interface updates
+
+### Pattern: CSV-Based Trade Logging
+- **Intent**: Simple, human-readable trade history
+- **Use When**: Need quick access to trade history without database overhead
+- **Avoid When**: High-frequency trading or large-scale data analysis needed
+- **Risk**: File size growth; consider database migration for scale
+
+## Known Challenges
+
+### Challenge: Streamlit Authentication State
+- **Description**: Session state management for authenticated users
+- **Workaround**: Use streamlit-authenticator's built-in session handling
+- **Status**: Solved
+- **Owner**: System
+
+### Challenge: Broker API Rate Limits
+- **Description**: Broker APIs may have rate limiting restrictions
+- **Workaround**: Implement request throttling and retry logic
+- **Status**: Open
+- **Owner**: TBD
+
+## Decision Evolution Log
+
+### Decision #001 – CSV Trade Logging
+- **Date**: 2025-01-XX
+- **Author**: System
+- **Summary**: Use CSV files for trade logging instead of database
+- **Reason**: Simplicity, no database overhead, easy human review
+- **Affected Modules**: trade_logger.py, dashboard Trade Journal
+- **Reversal Conditions**: If trade volume exceeds 1000+ trades/day
+- **Status**: Active
+
+### Decision #002 – Streamlit Dashboard UI
+- **Date**: 2025-01-XX
+- **Author**: System
+- **Summary**: Use Streamlit for web dashboard instead of Flask/FastAPI
+- **Reason**: Rapid development, built-in components, minimal boilerplate
+- **Affected Modules**: dashboard/ui_frontend.py
+- **Reversal Conditions**: If complex routing or custom UI required
+- **Status**: Active
+
+## Tool Usage Protocol
+
+| Tool           | Purpose                                  | Rule                                                  |
+|----------------|------------------------------------------|--------------------------------------------------------|
+| `memory-bank/` | Source of truth for project context       | Must be consulted and updated for all major features   |
+| `.cursorrules` | Project intelligence + decision evolution | Read-only unless agreed updates are made              |
+| Docs           | Markdown format only                     | All team members must follow naming & structure conventions |
+

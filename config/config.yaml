@@ -1,0 +1,30 @@
+# NIFTY Options Trading System Configuration
+
+# Trading Parameters
+lot_size: 75
+
+# Strategy Configuration
+strategy:
+  type: inside_bar
+  sl: 30              # Stop Loss in points
+  rr: 1.8             # Risk-Reward Ratio
+  filters:
+    volume_spike: true
+    avoid_open_range: true
+  
+# Timeframe Configuration
+timeframes:
+  detection: "1h"     # Inside Bar detection timeframe
+  confirmation: "15m" # Breakout confirmation timeframe
+
+# Broker Configuration (overridden by secrets.toml)
+broker:
+  type: "angel"       # Options: "angel", "fyers"
+  default_qty: 75     # Default quantity per trade
+
+# Logging Configuration
+logging:
+  trades_file: "logs/trades.csv"
+  errors_file: "logs/errors.log"
+  log_level: "INFO"
+
