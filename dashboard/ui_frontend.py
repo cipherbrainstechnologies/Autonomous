@@ -11,6 +11,7 @@ import pandas as pd
 from datetime import datetime
 import os
 import sys
+from logzero import logger
 
 # TOML support - use tomllib (Python 3.11+) or tomli package
 try:
@@ -45,6 +46,8 @@ from engine.trade_logger import TradeLogger, log_trade
 from engine.broker_connector import create_broker_interface
 from engine.signal_handler import SignalHandler
 from engine.backtest_engine import BacktestEngine
+from engine.market_data import MarketDataProvider
+from engine.live_runner import LiveStrategyRunner
 
 
 # Page config
@@ -212,6 +215,42 @@ if 'signal_handler' not in st.session_state:
 if 'trade_logger' not in st.session_state:
     st.session_state.trade_logger = TradeLogger()
 
+# Initialize market data provider (only if broker is available)
+if 'market_data_provider' not in st.session_state:
+    if st.session_state.broker is not None:
+        try:
+            st.session_state.market_data_provider = MarketDataProvider(st.session_state.broker)
+        except Exception as e:
+            st.session_state.market_data_provider = None
+            st.warning(f"Market data provider initialization warning: {e}")
+    else:
+        st.session_state.market_data_provider = None
+
+# Initialize live runner (lazy - only when needed)
+if 'live_runner' not in st.session_state:
+    # Load full config (with market_data section)
+    import yaml as yaml_lib
+    with open('config/config.yaml', 'r') as f:
+        full_config = yaml_lib.safe_load(f)
+    
+    if (st.session_state.broker is not None and 
+        st.session_state.market_data_provider is not None and
+        'signal_handler' in st.session_state and
+        'trade_logger' in st.session_state):
+        try:
+            st.session_state.live_runner = LiveStrategyRunner(
+                market_data_provider=st.session_state.market_data_provider,
+                signal_handler=st.session_state.signal_handler,
+                broker=st.session_state.broker,
+                trade_logger=st.session_state.trade_logger,
+                config=full_config
+            )
+        except Exception as e:
+            st.session_state.live_runner = None
+            st.warning(f"Live runner initialization warning: {e}")
+    else:
+        st.session_state.live_runner = None
+
 # Sidebar menu
 tab = st.sidebar.radio(
     "📋 Menu",
@@ -249,15 +288,82 @@ if tab == "Dashboard":
     
     with col1:
         if st.button("▶️ Start Algo", disabled=st.session_state.algo_running, use_container_width=True):
-            st.session_state.algo_running = True
-            st.success("✅ Algorithm started")
+            if st.session_state.live_runner is None:
+                st.error("❌ Live runner not initialized. Check broker configuration.")
+            else:
+                try:
+                    success = st.session_state.live_runner.start()
+                    if success:
+                        st.session_state.algo_running = True
+                        st.success("✅ Algorithm started - Monitoring live market data...")
+                    else:
+                        st.error("❌ Failed to start algorithm. Check logs for details.")
+                except Exception as e:
+                    st.error(f"❌ Error starting algorithm: {e}")
+                    logger.exception(e)
             st.rerun()
     
     with col2:
         if st.button("⏹️ Stop Algo", disabled=not st.session_state.algo_running, use_container_width=True):
-            st.session_state.algo_running = False
-            st.warning("⏸️ Algorithm stopped")
+            if st.session_state.live_runner is not None:
+                try:
+                    success = st.session_state.live_runner.stop()
+                    if success:
+                        st.session_state.algo_running = False
+                        st.warning("⏸️ Algorithm stopped")
+                    else:
+                        st.error("❌ Failed to stop algorithm")
+                except Exception as e:
+                    st.error(f"❌ Error stopping algorithm: {e}")
+                    logger.exception(e)
+            else:
+                st.session_state.algo_running = False
             st.rerun()
+    
+    # Live data status
+    if st.session_state.algo_running and st.session_state.live_runner is not None:
+        st.divider()
+        st.subheader("📡 Live Data Status")
+        
+        status = st.session_state.live_runner.get_status()
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Status", "🟢 Running" if status['running'] else "🔴 Stopped")
+        
+        with col2:
+            st.metric("Cycles Completed", status['cycle_count'])
+        
+        with col3:
+            if status['last_fetch_time']:
+                fetch_time = datetime.fromisoformat(status['last_fetch_time'])
+                st.metric("Last Data Fetch", fetch_time.strftime("%H:%M:%S"))
+            else:
+                st.metric("Last Data Fetch", "Never")
+        
+        with col4:
+            if status['last_signal_time']:
+                signal_time = datetime.fromisoformat(status['last_signal_time'])
+                st.metric("Last Signal", signal_time.strftime("%H:%M:%S"))
+            else:
+                st.metric("Last Signal", "None")
+        
+        # Show error count if any
+        if status['error_count'] > 0:
+            st.warning(f"⚠️ {status['error_count']} errors encountered. Check logs for details.")
+        
+        # Manual refresh button
+        if st.button("🔄 Refresh Market Data Now"):
+            try:
+                if st.session_state.market_data_provider:
+                    st.session_state.market_data_provider.refresh_data()
+                    st.success("✅ Market data refreshed")
+                else:
+                    st.error("❌ Market data provider not available")
+            except Exception as e:
+                st.error(f"❌ Error refreshing data: {e}")
+                logger.exception(e)
     
     st.divider()
     

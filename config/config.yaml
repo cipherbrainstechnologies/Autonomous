@@ -28,3 +28,13 @@ logging:
   errors_file: "logs/errors.log"
   log_level: "INFO"
 
+# Market Data Configuration
+market_data:
+  polling_interval_seconds: 900  # 15 minutes
+  max_retries: 3
+  retry_delay_seconds: 5
+  nifty_symbol: "NIFTY"  # Trading symbol for NIFTY index
+  nifty_exchange: "NSE"
+  data_window_hours_1h: 48
+  data_window_hours_15m: 12
+

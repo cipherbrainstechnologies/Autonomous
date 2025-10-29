@@ -242,6 +242,62 @@ class AngelOneBroker(BrokerInterface):
         # If refresh fails, generate new session
         return self._refresh_token()
     
+    def _search_symbol(self, exchange: str, symbol: str) -> Optional[Dict]:
+        """
+        Search for symbol using SmartAPI Symbol Search API.
+        Uses direct REST API call since SmartAPI-Python doesn't have symbolSearch method.
+        
+        Args:
+            exchange: Exchange code (NSE, NFO, BSE, etc.)
+            symbol: Symbol name to search (e.g., "NIFTY", "SBIN")
+        
+        Returns:
+            API response dictionary or None if error
+        """
+        try:
+            if not self._ensure_session():
+                logger.error("Cannot search symbol: No valid session")
+                return None
+            
+            if not self.auth_token:
+                logger.error("Auth token not available for symbol search")
+                return None
+            
+            # SmartAPI Symbol Search API endpoint
+            url = "https://apiconnect.angelone.in/rest/secure/angelbroking/market/v1/searchscrip"
+            headers = {
+                "Authorization": f"Bearer {self.auth_token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "X-UserType": "USER",
+                "X-SourceID": "WEB",
+                "X-ClientLocalIP": "192.168.1.1",
+                "X-ClientPublicIP": "192.168.1.1",
+                "X-MACAddress": "00:00:00:00:00:00",
+                "X-PrivateKey": self.api_key
+            }
+            
+            # Request format based on SmartAPI pattern
+            request_params = {
+                "searchscrip": symbol,
+                "exchange": exchange
+            }
+            
+            import requests
+            response = requests.post(url, json=request_params, headers=headers)
+            response_data = response.json()
+            
+            if response_data.get('status') == False or response_data.get('success') == False:
+                error_msg = response_data.get('message', 'Unknown error')
+                logger.error(f"Symbol search failed: {error_msg}")
+                return None
+            
+            return response_data
+            
+        except Exception as e:
+            logger.exception(f"Error searching symbol {symbol} on {exchange}: {e}")
+            return None
+    
     def _get_symbol_token(self, tradingsymbol: str, exchange: str = "NFO") -> Optional[str]:
         """
         Fetch symboltoken from SmartAPI symbol master.
@@ -258,14 +314,18 @@ class AngelOneBroker(BrokerInterface):
                 logger.error("Cannot fetch symbol token: No valid session")
                 return None
             
-            # Fetch symbol master
-            symbol_master = self.smart_api.symbolSearch(exchange, tradingsymbol)
+            # Search for symbol using direct API call
+            symbol_result = self._search_symbol(exchange, tradingsymbol)
             
-            if symbol_master.get('status') == False:
-                logger.error(f"Symbol lookup failed for {tradingsymbol}: {symbol_master.get('message')}")
+            if not symbol_result:
+                logger.error(f"Symbol lookup failed for {tradingsymbol}")
                 return None
             
-            symbols = symbol_master.get('data', [])
+            # Parse response - check different possible response formats
+            symbols = symbol_result.get('data', [])
+            if not symbols:
+                # Try alternative response format
+                symbols = symbol_result.get('fetched', [])
             
             if not symbols:
                 logger.warning(f"Symbol {tradingsymbol} not found in symbol master")
@@ -582,6 +642,96 @@ class AngelOneBroker(BrokerInterface):
         """
         logger.info("Manual session refresh requested")
         return self._refresh_token()
+    
+    def get_market_quote(self, params: Dict) -> Dict:
+        """
+        Get market quote using SmartAPI Market Data API.
+        Wrapper for SmartAPI Market Data API.
+        
+        Args:
+            params: Request parameters in format:
+                {
+                    "mode": "LTP" | "OHLC" | "FULL",
+                    "exchangeTokens": {
+                        "NSE": ["token1", "token2"],
+                        "NFO": ["token3"]
+                    }
+                }
+        
+        Returns:
+            Dictionary with API response
+        """
+        try:
+            if not self._ensure_session():
+                logger.error("Cannot fetch market quote: No valid session")
+                return {"status": False, "message": "No valid session"}
+            
+            # Try using SmartAPI's marketQuote method if available
+            try:
+                response = self.smart_api.marketQuote(params)
+                return response
+            except AttributeError:
+                # Method doesn't exist, use direct API call
+                import requests
+                
+                if not self.auth_token:
+                    logger.error("Auth token not available for market quote API")
+                    return {"status": False, "message": "No auth token"}
+                
+                url = "https://apiconnect.angelone.in/rest/secure/angelbroking/market/v1/quote/"
+                headers = {
+                    "Authorization": f"Bearer {self.auth_token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "X-UserType": "USER",
+                    "X-SourceID": "WEB",
+                    "X-ClientLocalIP": "192.168.1.1",
+                    "X-ClientPublicIP": "192.168.1.1",
+                    "X-MACAddress": "00:00:00:00:00:00",
+                    "X-PrivateKey": self.api_key
+                }
+                
+                response = requests.post(url, json=params, headers=headers)
+                return response.json()
+                
+        except Exception as e:
+            logger.exception(f"Error fetching market quote: {e}")
+            return {"status": False, "message": str(e)}
+    
+    def get_historical_candles(self, params: Dict) -> Dict:
+        """
+        Get historical candle data using SmartAPI getCandleData API.
+        
+        Args:
+            params: Request parameters in format:
+                {
+                    "exchange": "NSE" | "NFO" | "BSE",
+                    "symboltoken": "token_string",
+                    "interval": "ONE_MINUTE" | "FIVE_MINUTE" | "FIFTEEN_MINUTE" | "THIRTY_MINUTE" | "ONE_HOUR",
+                    "fromdate": "YYYY-MM-DD HH:mm",
+                    "todate": "YYYY-MM-DD HH:mm"
+                }
+        
+        Returns:
+            Dictionary with API response containing historical candle data
+        """
+        try:
+            if not self._ensure_session():
+                logger.error("Cannot fetch historical candles: No valid session")
+                return {"status": False, "message": "No valid session"}
+            
+            # Call SmartAPI getCandleData
+            response = self.smart_api.getCandleData(params)
+            
+            if response.get('status') == False:
+                error_msg = response.get('message', 'Unknown error')
+                logger.error(f"Historical candles fetch failed: {error_msg}")
+            
+            return response
+            
+        except Exception as e:
+            logger.exception(f"Error fetching historical candles: {e}")
+            return {"status": False, "message": str(e)}
 
 
 class FyersBroker(BrokerInterface):
