@@ -22,6 +22,14 @@ broker:
   type: "angel"       # Options: "angel", "fyers"
   default_qty: 150     # Default quantity per trade (2 lots x 75)
 
+# Position Management (point-based)
+position_management:
+  sl_points: 30          # initial SL in points (option price)
+  trail_points: 10       # trailing step in points
+  book1_points: 40       # book 50% at entry + 40 points
+  book2_points: 54       # book remaining at entry + 54 points
+  book1_ratio: 0.5       # 50% at first target
+
 # Logging Configuration
 logging:
   trades_file: "logs/trades.csv"

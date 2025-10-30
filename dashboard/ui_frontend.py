@@ -266,7 +266,7 @@ if tab == "Dashboard":
     st.header("📈 Live Algo Status")
     
     # Status indicators
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         engine_status = "🟢 Running" if st.session_state.algo_running else "🔴 Stopped"
@@ -280,8 +280,30 @@ if tab == "Dashboard":
         # Get active signals count
         active_signals = st.session_state.signal_handler.get_active_signals()
         st.metric("Active Trades", len(active_signals))
+
+    with col4:
+        # NIFTY current live price (LTP)
+        ltp_text = "—"
+        try:
+            if st.session_state.market_data_provider is not None:
+                ohlc = st.session_state.market_data_provider.fetch_ohlc(mode="LTP")
+                if isinstance(ohlc, dict):
+                    ltp_val = ohlc.get('ltp')
+                    if ltp_val is None:
+                        ltp_val = ohlc.get('close')
+                    if ltp_val is not None:
+                        ltp_text = f"{float(ltp_val):.2f}"
+        except Exception:
+            pass
+        st.metric("NIFTY LTP", ltp_text)
     
     st.divider()
+    # Auto-refresh toggle (10s)
+    auto = st.checkbox("Auto-refresh every 10 seconds", value=True)
+    if auto:
+        import time as _t
+        st.caption("Auto-refresh enabled")
+        # Trigger rerun after rendering at the bottom of the page
     
     # Control buttons
     col1, col2 = st.columns(2)
@@ -367,13 +389,57 @@ if tab == "Dashboard":
     
     st.divider()
     
+    # Live NIFTY Chart and Option Data
+    st.subheader("📈 NIFTY Index – Live 15m Chart")
+    if st.session_state.market_data_provider is not None:
+        try:
+            df15 = st.session_state.market_data_provider.get_15m_data(
+                window_hours=st.session_state.live_runner.config.get('market_data', {}).get('data_window_hours_15m', 12)
+            ) if st.session_state.live_runner else pd.DataFrame()
+            # Ensure buffers are populated if historical fetch fails
+            if st.session_state.market_data_provider:
+                try:
+                    st.session_state.market_data_provider.refresh_data()
+                except Exception:
+                    pass
+            if df15 is not None and not df15.empty:
+                chart_df = df15.set_index('Date')[['Close']]
+                st.line_chart(chart_df, width='stretch')
+            else:
+                st.info("No 15m data available yet.")
+        except Exception as e:
+            st.warning(f"Chart error: {e}")
+    else:
+        st.info("Market data provider not initialized.")
+
+    st.divider()
+    st.subheader("📐 Option Greeks (NIFTY – next Tuesday expiry)")
+    try:
+        if st.session_state.broker is not None:
+            greeks = st.session_state.broker.get_option_greeks("NIFTY")
+            if greeks:
+                greeks_df = pd.DataFrame(greeks)
+                # Keep key columns visible
+                keep_cols = [c for c in [
+                    'name','expiry','strikePrice','optionType','delta','gamma','theta','vega','impliedVolatility','tradeVolume'
+                ] if c in greeks_df.columns]
+                st.dataframe(greeks_df[keep_cols], width='stretch', height=300)
+            else:
+                st.info("No Greeks data returned.")
+        else:
+            st.info("Broker not initialized.")
+    except Exception as e:
+        st.warning(f"Greeks error: {e}")
+
+    st.divider()
+
     # Active Trades Section
     st.subheader("📊 Active Trades")
     active_signals = st.session_state.signal_handler.get_active_signals()
     
     if active_signals:
         trades_df = pd.DataFrame(active_signals)
-        st.dataframe(trades_df, use_container_width=True)
+        st.dataframe(trades_df, width='stretch')
     else:
         st.info("ℹ️ No active trades")
     
@@ -399,6 +465,12 @@ if tab == "Dashboard":
         filters = strategy_config.get('strategy', {}).get('filters', {})
         st.write(f"- Volume Spike: {'✅' if filters.get('volume_spike') else '❌'}")
         st.write(f"- Avoid Open Range: {'✅' if filters.get('avoid_open_range') else '❌'}")
+
+    # Perform auto-refresh rerun at the end to avoid interrupting rendering
+    if auto:
+        import time as _t
+        _t.sleep(10)
+        st.rerun()
 
 # ============ TRADE JOURNAL TAB ============
 elif tab == "Trade Journal":

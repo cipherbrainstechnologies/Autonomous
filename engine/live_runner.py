@@ -12,6 +12,7 @@ from engine.market_data import MarketDataProvider
 from engine.signal_handler import SignalHandler
 from engine.broker_connector import BrokerInterface
 from engine.trade_logger import TradeLogger
+from engine.position_monitor import PositionMonitor, PositionRules
 
 
 class LiveStrategyRunner:
@@ -68,6 +69,7 @@ class LiveStrategyRunner:
         self.last_signal_time = None
         self.cycle_count = 0
         self.error_count = 0
+        self.active_monitors = []
         
         logger.info(f"LiveStrategyRunner initialized (polling interval: {self.polling_interval}s)")
     
@@ -250,6 +252,33 @@ class LiveStrategyRunner:
                 )
                 
                 logger.info(f"Trade logged: Order {order_id}, {direction} {strike} @ {entry}")
+
+                # Start PositionMonitor for this position
+                try:
+                    symboltoken = order_result.get('symboltoken')
+                    exchange = order_result.get('exchange', 'NFO')
+                    pm_cfg = self.config.get('position_management', {})
+                    rules = PositionRules(
+                        sl_points=int(pm_cfg.get('sl_points', 30)),
+                        trail_points=int(pm_cfg.get('trail_points', 10)),
+                        book1_points=int(pm_cfg.get('book1_points', 40)),
+                        book2_points=int(pm_cfg.get('book2_points', 54)),
+                        book1_ratio=float(pm_cfg.get('book1_ratio', 0.5)),
+                    )
+                    monitor = PositionMonitor(
+                        broker=self.broker,
+                        symbol_token=symboltoken,
+                        exchange=exchange,
+                        entry_price=entry,
+                        total_qty=self.order_qty,
+                        rules=rules,
+                        order_id=order_id,
+                    )
+                    if monitor.start():
+                        self.active_monitors.append(monitor)
+                        logger.info("Position monitor started for order {order_id}")
+                except Exception as e:
+                    logger.exception(f"Failed to start PositionMonitor: {e}")
                 
             else:
                 error_msg = order_result.get('message', 'Unknown error')

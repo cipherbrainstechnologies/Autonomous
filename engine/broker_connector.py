@@ -124,6 +124,10 @@ class AngelOneBroker(BrokerInterface):
         self.pwd = config.get('pwd', '')
         self.token = config.get('token', '')  # TOTP QR secret
         self.client_id = config.get('client_id', '')
+        # Network identity headers for WAF compliance
+        self.local_ip = config.get('local_ip', '192.168.1.5')
+        self.public_ip = config.get('public_ip', '122.164.104.89')
+        self.mac_address = config.get('mac', 'E8:9C:25:81:DD:AB')
         
         # Initialize SmartConnect
         self.smart_api = SmartConnect(self.api_key)
@@ -135,6 +139,22 @@ class AngelOneBroker(BrokerInterface):
         self.session_generated = False
         
         logger.info("AngelOneBroker initialized. Session will be generated on first API call.")
+
+    def _default_headers(self) -> Dict:
+        """
+        Build default headers for direct REST calls (symbol search, market quote, greeks).
+        """
+        return {
+            "Authorization": f"Bearer {self.auth_token}" if self.auth_token else "",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-UserType": "USER",
+            "X-SourceID": "WEB",
+            "X-ClientLocalIP": self.local_ip,
+            "X-ClientPublicIP": self.public_ip,
+            "X-MACAddress": self.mac_address,
+            "X-PrivateKey": self.api_key
+        }
     
     def _generate_session(self) -> bool:
         """
@@ -279,17 +299,7 @@ class AngelOneBroker(BrokerInterface):
             
             # SmartAPI Symbol Search API endpoint
             url = "https://apiconnect.angelone.in/rest/secure/angelbroking/market/v1/searchscrip"
-            headers = {
-                "Authorization": f"Bearer {self.auth_token}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "X-UserType": "USER",
-                "X-SourceID": "WEB",
-                "X-ClientLocalIP": "192.168.1.1",
-                "X-ClientPublicIP": "192.168.1.1",
-                "X-MACAddress": "00:00:00:00:00:00",
-                "X-PrivateKey": self.api_key
-            }
+            headers = self._default_headers()
             
             # Request format based on SmartAPI pattern
             request_params = {
@@ -451,17 +461,7 @@ class AngelOneBroker(BrokerInterface):
                 expiry_date = self._get_next_tuesday_expiry_ddmmmyyyy()
             import requests
             url = "https://apiconnect.angelone.in/rest/secure/angelbroking/marketData/v1/optionGreek"
-            headers = {
-                "Authorization": f"Bearer {self.auth_token}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "X-UserType": "USER",
-                "X-SourceID": "WEB",
-                "X-ClientLocalIP": "192.168.1.1",
-                "X-ClientPublicIP": "192.168.1.1",
-                "X-MACAddress": "00:00:00:00:00:00",
-                "X-PrivateKey": self.api_key
-            }
+            headers = self._default_headers()
             payload = {"name": underlying, "expirydate": expiry_date}
             resp = requests.post(url, json=payload, headers=headers, timeout=10)
             if resp.status_code != 200:
@@ -569,6 +569,8 @@ class AngelOneBroker(BrokerInterface):
                 "message": "Order placed successfully",
                 "order_id": str(order_id) if order_id else None,
                 "order_data": orderparams,
+                "symboltoken": symboltoken,
+                "exchange": "NFO",
                 "response": response_data
             }
             
@@ -789,17 +791,7 @@ class AngelOneBroker(BrokerInterface):
                     return {"status": False, "message": "No auth token"}
                 
                 url = "https://apiconnect.angelone.in/rest/secure/angelbroking/market/v1/quote/"
-                headers = {
-                    "Authorization": f"Bearer {self.auth_token}",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "X-UserType": "USER",
-                    "X-SourceID": "WEB",
-                    "X-ClientLocalIP": "192.168.1.1",
-                    "X-ClientPublicIP": "192.168.1.1",
-                    "X-MACAddress": "00:00:00:00:00:00",
-                    "X-PrivateKey": self.api_key
-                }
+            headers = self._default_headers()
                 
                 response = requests.post(url, json=params, headers=headers)
                 return response.json()

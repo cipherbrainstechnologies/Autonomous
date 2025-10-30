@@ -60,13 +60,25 @@ class MarketDataProvider:
         - 1h candle at 10:00 is complete at 11:00 (1 hour after start)
         
         Args:
-            candle_time: Start time of the candle (datetime)
+            candle_time: Start time of the candle (datetime or Timestamp, may be timezone-aware)
             timeframe_minutes: Timeframe in minutes (15 or 60)
         
         Returns:
             True if candle is complete, False if still forming
         """
+        # Get current time (timezone-naive)
         current_time = datetime.now()
+        
+        # Normalize candle_time: if it's timezone-aware (from API), convert to naive
+        # Convert pandas Timestamp to Python datetime if needed
+        if hasattr(candle_time, 'to_pydatetime'):
+            candle_time = candle_time.to_pydatetime()
+        
+        # If candle_time is timezone-aware, remove timezone info (convert to naive)
+        if candle_time.tzinfo is not None:
+            # Convert to local timezone and then remove tzinfo
+            candle_time = candle_time.replace(tzinfo=None)
+        
         next_candle_start = candle_time + timedelta(minutes=timeframe_minutes)
         
         # Candle is complete if current time >= next candle start time
@@ -87,9 +99,13 @@ class MarketDataProvider:
         if df.empty:
             return df
         
-        # Ensure Date is datetime
+        # Ensure Date is datetime and timezone-naive
         if not pd.api.types.is_datetime64_any_dtype(df['Date']):
             df['Date'] = pd.to_datetime(df['Date'])
+        
+        # Normalize Date column to timezone-naive if needed (safety check)
+        if df['Date'].dt.tz is not None:
+            df['Date'] = df['Date'].dt.tz_convert('UTC').dt.tz_localize(None)
         
         # Check each candle and filter out incomplete ones
         complete_candles = []
@@ -234,15 +250,16 @@ class MarketDataProvider:
                     return None
                 
                 url = "https://apiconnect.angelone.in/rest/secure/angelbroking/market/v1/quote/"
+                # Reuse broker's configured identity headers
                 headers = {
                     "Authorization": f"Bearer {self.broker.auth_token}",
                     "Content-Type": "application/json",
                     "Accept": "application/json",
                     "X-UserType": "USER",
                     "X-SourceID": "WEB",
-                    "X-ClientLocalIP": "192.168.1.1",
-                    "X-ClientPublicIP": "192.168.1.1",
-                    "X-MACAddress": "00:00:00:00:00:00",
+                    "X-ClientLocalIP": getattr(self.broker, 'local_ip', '192.168.1.5'),
+                    "X-ClientPublicIP": getattr(self.broker, 'public_ip', '122.164.104.89'),
+                    "X-MACAddress": getattr(self.broker, 'mac_address', 'E8:9C:25:81:DD:AB'),
                     "X-PrivateKey": self.broker.api_key
                 }
                 
@@ -338,7 +355,24 @@ class MarketDataProvider:
                 error_msg = response.get('message', 'Unknown error')
                 error_code = response.get('errorcode', '')
                 logger.error(f"Historical candles fetch failed: {error_msg} (code: {error_code})")
-                return None
+                # Retry once with a smaller window if generic failure (e.g., AB1004)
+                try:
+                    smaller_from = (datetime.now() - timedelta(hours=6)).strftime("%Y-%m-%d %H:%M")
+                    retry_params = {
+                        "exchange": exchange,
+                        "symboltoken": symbol_token,
+                        "interval": interval,
+                        "fromdate": smaller_from,
+                        "todate": to_date
+                    }
+                    self._rate_limit()
+                    retry_resp = self.smart_api.getCandleData(retry_params)
+                    if isinstance(retry_resp, dict) and retry_resp.get('status'):
+                        response = retry_resp
+                    else:
+                        return None
+                except Exception:
+                    return None
             
             # Parse response
             # SmartAPI getCandleData may return data in different formats
@@ -428,7 +462,13 @@ class MarketDataProvider:
             for col in timestamp_columns:
                 if col in df.columns:
                     try:
-                        df['Date'] = pd.to_datetime(df[col])
+                        # Parse timestamp - may be timezone-aware from API
+                        parsed_dates = pd.to_datetime(df[col])
+                        # Convert timezone-aware datetimes to naive for consistent comparison
+                        if parsed_dates.dt.tz is not None:
+                            # Convert to UTC first, then remove timezone info to make it naive
+                            parsed_dates = parsed_dates.dt.tz_convert('UTC').dt.tz_localize(None)
+                        df['Date'] = parsed_dates
                         timestamp_found = True
                         logger.debug(f"Using '{col}' column as timestamp")
                         break
@@ -440,7 +480,11 @@ class MarketDataProvider:
             if not timestamp_found and len(df.columns) > 0:
                 first_col = df.columns[0]
                 try:
-                    df['Date'] = pd.to_datetime(df[first_col])
+                    parsed_dates = pd.to_datetime(df[first_col])
+                    # Normalize timezone-aware to naive
+                    if parsed_dates.dt.tz is not None:
+                        parsed_dates = parsed_dates.dt.tz_convert('UTC').dt.tz_localize(None)
+                    df['Date'] = parsed_dates
                     timestamp_found = True
                     logger.debug(f"Using first column '{first_col}' as timestamp")
                 except Exception:
@@ -451,7 +495,11 @@ class MarketDataProvider:
                 logger.debug(f"Data sample: {df.head(2) if not df.empty else 'Empty DataFrame'}")
                 # Try to use index as timestamp if it's datetime
                 if isinstance(df.index, pd.DatetimeIndex):
-                    df['Date'] = df.index
+                    index_dates = df.index
+                    # Normalize timezone-aware to naive
+                    if index_dates.tz is not None:
+                        index_dates = index_dates.tz_convert('UTC').tz_localize(None)
+                    df['Date'] = index_dates
                     timestamp_found = True
                     logger.debug("Using DataFrame index as timestamp")
                 else:
@@ -512,7 +560,7 @@ class MarketDataProvider:
         df = raw_data.set_index('Date').copy()
         
         # Resample to 15 minutes
-        aggregated = df.resample('15T').agg({
+        aggregated = df.resample('15min').agg({
             'Open': 'first',
             'High': 'max',
             'Low': 'min',
@@ -551,7 +599,7 @@ class MarketDataProvider:
         df = raw_data.set_index('Date').copy()
         
         # Resample to 1 hour
-        aggregated = df.resample('1H').agg({
+        aggregated = df.resample('1h').agg({
             'Open': 'first',
             'High': 'max',
             'Low': 'min',
