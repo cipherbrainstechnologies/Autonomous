@@ -6,6 +6,12 @@ import csv
 import os
 from datetime import datetime
 from typing import Dict, List, Optional
+from decimal import Decimal, InvalidOperation
+
+from sqlalchemy.exc import IntegrityError
+
+from .db import get_session, init_database
+from .models import Trade
 import pandas as pd
 
 
@@ -89,6 +95,91 @@ class TradeLogger:
                 'pre_reason', 'post_outcome', 'quantity'
             ])
             writer.writerow(row)
+
+        # Also attempt to persist executed trades to Postgres if fields are available
+        try:
+            self._maybe_write_trade_to_db(trade)
+        except Exception:
+            # DB persistence is best-effort; CSV remains source of truth if DB unavailable
+            pass
+
+    def _maybe_write_trade_to_db(self, trade: Dict):
+        """
+        Best-effort write of executed trades into Postgres with idempotency.
+        Requires minimal fields: org_id, user_id, symbol, side(BUY/SELL), quantity, price, traded_at.
+        If not present, this is a no-op.
+        """
+        org_id = trade.get('org_id')
+        user_id = trade.get('user_id')
+        if not org_id or not user_id:
+            return
+
+        symbol = trade.get('symbol')
+        side = trade.get('side') or trade.get('buy_sell')
+        # Derive side from direction if needed (CE -> BUY assumed for entry)
+        if not side and trade.get('direction'):
+            dirv = str(trade.get('direction')).upper()
+            side = 'BUY' if dirv in ('BUY', 'CE') else 'SELL'
+
+        quantity = trade.get('quantity')
+        price = trade.get('entry') or trade.get('price')
+        if price is None or quantity in (None, '') or not symbol or not side:
+            return
+
+        try:
+            price_num = Decimal(str(price))
+        except (InvalidOperation, TypeError):
+            return
+
+        order_id = trade.get('order_id') or None
+        strategy_id = trade.get('strategy_id') or None
+        broker = trade.get('broker') or None
+
+        # traded_at from timestamp if provided
+        ts = trade.get('timestamp')
+        if isinstance(ts, str):
+            try:
+                traded_at = datetime.fromisoformat(ts)
+            except ValueError:
+                traded_at = datetime.utcnow()
+        else:
+            traded_at = datetime.utcnow()
+
+        # Ensure tables exist in dev environments
+        try:
+            init_database(create_all=True)
+        except Exception:
+            pass
+
+        sess_gen = get_session()
+        db = next(sess_gen)
+        try:
+            row = Trade(
+                org_id=str(org_id),
+                user_id=str(user_id),
+                strategy_id=str(strategy_id) if strategy_id else None,
+                symbol=str(symbol),
+                side=str(side).upper(),
+                quantity=int(quantity),
+                price=price_num,
+                fees=Decimal(str(trade.get('fees', '0')) or '0'),
+                order_id=str(order_id) if order_id else None,
+                broker=str(broker) if broker else None,
+                traded_at=traded_at,
+            )
+            db.add(row)
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            # Idempotent duplicate; ignore
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            try:
+                next(sess_gen)
+            except StopIteration:
+                pass
     
     def get_all_trades(self) -> pd.DataFrame:
         """

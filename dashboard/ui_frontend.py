@@ -254,7 +254,7 @@ if 'live_runner' not in st.session_state:
 # Sidebar menu
 tab = st.sidebar.radio(
     "📋 Menu",
-    ["Dashboard", "Portfolio", "Orders & Trades", "Trade Journal", "Backtest", "Settings"],
+    ["Dashboard", "Portfolio", "P&L", "Insights", "Orders & Trades", "Trade Journal", "Backtest", "Settings"],
     index=0
 )
 
@@ -298,6 +298,19 @@ if tab == "Dashboard":
         st.metric("NIFTY LTP", ltp_text)
     
     st.divider()
+
+    # In-app alert: toast when a new trade is logged
+    try:
+        if 'last_trade_count' not in st.session_state:
+            st.session_state.last_trade_count = 0
+        current_trades = st.session_state.trade_logger.get_all_trades()
+        current_count = len(current_trades) if not current_trades.empty else 0
+        if current_count > st.session_state.last_trade_count:
+            delta = current_count - st.session_state.last_trade_count
+            st.toast(f"✅ {delta} new trade(s) executed", icon="✅")
+        st.session_state.last_trade_count = current_count
+    except Exception:
+        pass
     # Auto-refresh toggle (10s)
     auto = st.checkbox("Auto-refresh every 10 seconds", value=True)
     if auto:
@@ -602,6 +615,61 @@ elif tab == "Portfolio":
                 st.warning(f"Failed to render positions: {e}")
         else:
             st.info("No positions returned.")
+
+elif tab == "P&L":
+    st.header("💹 P&L")
+    try:
+        from engine.pnl_service import compute_realized_pnl, pnl_timeseries
+        # Basic tenant context (dev default); wire real org/user later
+        org_id = config.get('tenant', {}).get('org_id', 'demo-org')
+        user_id = config.get('tenant', {}).get('user_id', 'admin')
+
+        colp1, colp2 = st.columns([1, 1])
+        with colp1:
+            st.subheader("Realized P&L (FIFO)")
+            res = compute_realized_pnl(org_id, user_id)
+            st.metric("Total Realized P&L", f"₹{res.get('realized_pnl', 0):,.2f}")
+        with colp2:
+            st.subheader("Daily Net Cash Flow (Proxy)")
+            series = pnl_timeseries(org_id, user_id)
+            try:
+                if series:
+                    s_df = pd.DataFrame(series)
+                    s_df = s_df.set_index('date')
+                    st.line_chart(s_df, width='stretch')
+                else:
+                    st.info("No P&L data yet.")
+            except Exception as e:
+                st.warning(f"Failed to render P&L series: {e}")
+    except Exception as e:
+        st.info("P&L services not available yet.")
+
+elif tab == "Insights":
+    st.header("🧠 Insights")
+    try:
+        from engine.ai_analysis import analyze_trades
+        org_id = config.get('tenant', {}).get('org_id', 'demo-org')
+        user_id = config.get('tenant', {}).get('user_id', 'admin')
+        lookback = st.slider("Lookback (days)", min_value=7, max_value=180, value=30, step=1)
+        res = analyze_trades(org_id, user_id, lookback_days=lookback)
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric("Total Trades", res.get('total_trades', 0))
+        with c2:
+            st.metric("BUY/SELL", f"{res.get('buy_trades',0)}/{res.get('sell_trades',0)}")
+        with c3:
+            st.metric("Avg Trade Price", f"₹{res.get('avg_trade_price',0):,.2f}")
+        with c4:
+            st.metric("Realized P&L", f"₹{res.get('realized_pnl',0):,.2f}")
+        st.subheader("Top Symbols")
+        top = res.get('top_symbols', [])
+        if top:
+            tdf = pd.DataFrame(top, columns=["Symbol", "Trades"])
+            st.dataframe(tdf, width='stretch', height=200)
+        else:
+            st.info("No symbol concentration yet.")
+    except Exception as e:
+        st.info("Insights will appear once trades are recorded and DB is configured.")
 
 elif tab == "Orders & Trades":
     st.header("📑 Orders & Trades")
