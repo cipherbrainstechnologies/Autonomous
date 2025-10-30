@@ -502,31 +502,46 @@ elif tab == "Portfolio":
         # Cached fetchers to respect API rate limits
         @st.cache_data(ttl=15)
         def _fetch_holdings():
-            try:
-                return st.session_state.broker.get_holdings()
-            except Exception as e:
-                logger.exception(e)
-                return []
+            import time
+            attempts = 0
+            while attempts < 2:
+                try:
+                    return st.session_state.broker.get_holdings()
+                except Exception as e:
+                    logger.exception(e)
+                    attempts += 1
+                    time.sleep(2)
+            return []
 
         @st.cache_data(ttl=15)
         def _fetch_all_holdings():
-            try:
-                return st.session_state.broker.get_all_holdings()
-            except Exception as e:
-                logger.exception(e)
-                return {}
+            import time
+            attempts = 0
+            while attempts < 2:
+                try:
+                    return st.session_state.broker.get_all_holdings()
+                except Exception as e:
+                    logger.exception(e)
+                    attempts += 1
+                    time.sleep(2)
+            return {}
 
         @st.cache_data(ttl=15)
         def _fetch_positions_book():
-            try:
-                # Prefer detailed positions book endpoint
-                if hasattr(st.session_state.broker, 'get_positions_book'):
-                    return st.session_state.broker.get_positions_book()
-                # Fallback to generic positions
-                return st.session_state.broker.get_positions()
-            except Exception as e:
-                logger.exception(e)
-                return []
+            import time
+            attempts = 0
+            while attempts < 2:
+                try:
+                    # Prefer detailed positions book endpoint
+                    if hasattr(st.session_state.broker, 'get_positions_book'):
+                        return st.session_state.broker.get_positions_book()
+                    # Fallback to generic positions
+                    return st.session_state.broker.get_positions()
+                except Exception as e:
+                    logger.exception(e)
+                    attempts += 1
+                    time.sleep(2)
+            return []
 
         # Controls
         colr1, colr2 = st.columns([1,1])
@@ -595,24 +610,34 @@ elif tab == "Orders & Trades":
     else:
         @st.cache_data(ttl=15)
         def _fetch_order_book():
-            try:
-                if hasattr(st.session_state.broker, 'get_order_book'):
-                    return st.session_state.broker.get_order_book()
-                # Fallback via SmartAPI SDK if method absent
-                return st.session_state.broker.smart_api.orderBook().get('data', [])
-            except Exception as e:
-                logger.exception(e)
-                return []
+            import time
+            attempts = 0
+            while attempts < 2:
+                try:
+                    if hasattr(st.session_state.broker, 'get_order_book'):
+                        return st.session_state.broker.get_order_book()
+                    # Fallback via SmartAPI SDK if method absent
+                    return st.session_state.broker.smart_api.orderBook().get('data', [])
+                except Exception as e:
+                    logger.exception(e)
+                    attempts += 1
+                    time.sleep(2)
+            return []
 
         @st.cache_data(ttl=15)
         def _fetch_trade_book():
-            try:
-                if hasattr(st.session_state.broker, 'get_trade_book'):
-                    return st.session_state.broker.get_trade_book()
-                return st.session_state.broker.smart_api.tradeBook().get('data', [])
-            except Exception as e:
-                logger.exception(e)
-                return []
+            import time
+            attempts = 0
+            while attempts < 2:
+                try:
+                    if hasattr(st.session_state.broker, 'get_trade_book'):
+                        return st.session_state.broker.get_trade_book()
+                    return st.session_state.broker.smart_api.tradeBook().get('data', [])
+                except Exception as e:
+                    logger.exception(e)
+                    attempts += 1
+                    time.sleep(2)
+            return []
 
         colb1, colb2 = st.columns([1,1])
         with colb1:
