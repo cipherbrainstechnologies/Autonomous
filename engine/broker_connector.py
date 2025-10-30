@@ -835,6 +835,186 @@ class AngelOneBroker(BrokerInterface):
             logger.exception(f"Error fetching historical candles: {e}")
             return {"status": False, "message": str(e)}
 
+    def get_holdings(self) -> List[Dict]:
+        """
+        Fetch current holdings using SmartAPI portfolio endpoint.
+
+        Returns:
+            List of holding dictionaries (empty list on error)
+        """
+        try:
+            if not self._ensure_session():
+                logger.error("Cannot fetch holdings: No valid session")
+                return []
+            if not self.auth_token:
+                logger.error("Auth token not available for holdings API")
+                return []
+            import requests
+            url = "https://apiconnect.angelone.in/rest/secure/angelbroking/portfolio/v1/getHolding"
+            headers = self._default_headers()
+            resp = requests.post(url, json={}, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                logger.error(f"Holdings API status {resp.status_code}: {resp.text[:200]}")
+                return []
+            ctype = resp.headers.get('content-type', '').lower()
+            if 'application/json' not in ctype:
+                logger.error(f"Holdings API non-JSON response: {ctype}")
+                return []
+            data = resp.json()
+            if not isinstance(data, dict) or data.get('status') is False:
+                logger.error(f"Holdings API error: {data.get('message') if isinstance(data, dict) else 'Unknown'}")
+                return []
+            holdings = data.get('data', []) or []
+            logger.info(f"Fetched {len(holdings)} holdings")
+            return holdings
+        except Exception as e:
+            logger.exception(f"Error fetching holdings: {e}")
+            return []
+
+    def get_all_holdings(self) -> Dict:
+        """
+        Fetch all holdings summary (totals/P&L) using SmartAPI endpoint.
+
+        Returns:
+            Dict with totals and holdings data (empty dict on error)
+        """
+        try:
+            if not self._ensure_session():
+                logger.error("Cannot fetch all holdings: No valid session")
+                return {}
+            if not self.auth_token:
+                logger.error("Auth token not available for all holdings API")
+                return {}
+            import requests
+            url = "https://apiconnect.angelone.in/rest/secure/angelbroking/portfolio/v1/getAllHolding"
+            headers = self._default_headers()
+            resp = requests.post(url, json={}, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                logger.error(f"AllHoldings API status {resp.status_code}: {resp.text[:200]}")
+                return {}
+            ctype = resp.headers.get('content-type', '').lower()
+            if 'application/json' not in ctype:
+                logger.error(f"AllHoldings API non-JSON response: {ctype}")
+                return {}
+            data = resp.json()
+            if not isinstance(data, dict) or data.get('status') is False:
+                logger.error(f"AllHoldings API error: {data.get('message') if isinstance(data, dict) else 'Unknown'}")
+                return {}
+            payload = data.get('data', {}) or {}
+            logger.info("Fetched all holdings summary")
+            return payload
+        except Exception as e:
+            logger.exception(f"Error fetching all holdings: {e}")
+            return {}
+
+    def get_positions_book(self) -> List[Dict]:
+        """
+        Fetch positions (day/net) using SmartAPI order position endpoint.
+
+        Returns:
+            List of position dictionaries
+        """
+        try:
+            if not self._ensure_session():
+                logger.error("Cannot fetch positions book: No valid session")
+                return []
+            if not self.auth_token:
+                logger.error("Auth token not available for positions API")
+                return []
+            import requests
+            url = "https://apiconnect.angelone.in/rest/secure/angelbroking/order/v1/getPosition"
+            headers = self._default_headers()
+            resp = requests.post(url, json={}, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                logger.error(f"Positions API status {resp.status_code}: {resp.text[:200]}")
+                return []
+            ctype = resp.headers.get('content-type', '').lower()
+            if 'application/json' not in ctype:
+                logger.error(f"Positions API non-JSON response: {ctype}")
+                return []
+            data = resp.json()
+            if not isinstance(data, dict) or data.get('status') is False:
+                logger.error(f"Positions API error: {data.get('message') if isinstance(data, dict) else 'Unknown'}")
+                return []
+            positions = data.get('data', []) or []
+            logger.info(f"Fetched {len(positions)} positions (book)")
+            return positions
+        except Exception as e:
+            logger.exception(f"Error fetching positions book: {e}")
+            return []
+
+    def get_order_book(self) -> List[Dict]:
+        """
+        Fetch order book using SmartAPI endpoint.
+
+        Returns:
+            List of order dictionaries
+        """
+        try:
+            if not self._ensure_session():
+                logger.error("Cannot fetch order book: No valid session")
+                return []
+            if not self.auth_token:
+                logger.error("Auth token not available for order book API")
+                return []
+            import requests
+            url = "https://apiconnect.angelone.in/rest/secure/angelbroking/order/v1/getOrderBook"
+            headers = self._default_headers()
+            resp = requests.post(url, json={}, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                logger.error(f"OrderBook API status {resp.status_code}: {resp.text[:200]}")
+                return []
+            ctype = resp.headers.get('content-type', '').lower()
+            if 'application/json' not in ctype:
+                logger.error(f"OrderBook API non-JSON response: {ctype}")
+                return []
+            data = resp.json()
+            if not isinstance(data, dict) or data.get('status') is False:
+                logger.error(f"OrderBook API error: {data.get('message') if isinstance(data, dict) else 'Unknown'}")
+                return []
+            orders = data.get('data', []) or []
+            logger.info(f"Fetched {len(orders)} orders")
+            return orders
+        except Exception as e:
+            logger.exception(f"Error fetching order book: {e}")
+            return []
+
+    def get_trade_book(self) -> List[Dict]:
+        """
+        Fetch trade book (day trades) using SmartAPI endpoint.
+
+        Returns:
+            List of trade dictionaries
+        """
+        try:
+            if not self._ensure_session():
+                logger.error("Cannot fetch trade book: No valid session")
+                return []
+            if not self.auth_token:
+                logger.error("Auth token not available for trade book API")
+                return []
+            import requests
+            url = "https://apiconnect.angelone.in/rest/secure/angelbroking/order/v1/getTradeBook"
+            headers = self._default_headers()
+            resp = requests.post(url, json={}, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                logger.error(f"TradeBook API status {resp.status_code}: {resp.text[:200]}")
+                return []
+            ctype = resp.headers.get('content-type', '').lower()
+            if 'application/json' not in ctype:
+                logger.error(f"TradeBook API non-JSON response: {ctype}")
+                return []
+            data = resp.json()
+            if not isinstance(data, dict) or data.get('status') is False:
+                logger.error(f"TradeBook API error: {data.get('message') if isinstance(data, dict) else 'Unknown'}")
+                return []
+            trades = data.get('data', []) or []
+            logger.info(f"Fetched {len(trades)} trades")
+            return trades
+        except Exception as e:
+            logger.exception(f"Error fetching trade book: {e}")
+            return []
+
 
 class FyersBroker(BrokerInterface):
     """

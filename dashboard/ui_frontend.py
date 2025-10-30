@@ -254,7 +254,7 @@ if 'live_runner' not in st.session_state:
 # Sidebar menu
 tab = st.sidebar.radio(
     "📋 Menu",
-    ["Dashboard", "Trade Journal", "Backtest", "Settings"],
+    ["Dashboard", "Portfolio", "Orders & Trades", "Trade Journal", "Backtest", "Settings"],
     index=0
 )
 
@@ -423,7 +423,28 @@ if tab == "Dashboard":
                 keep_cols = [c for c in [
                     'name','expiry','strikePrice','optionType','delta','gamma','theta','vega','impliedVolatility','tradeVolume'
                 ] if c in greeks_df.columns]
-                st.dataframe(greeks_df[keep_cols], width='stretch', height=300)
+
+                # Filter to nearest strikes around ATM (±10 strikes window)
+                atm_val = None
+                try:
+                    if st.session_state.market_data_provider is not None:
+                        o = st.session_state.market_data_provider.fetch_ohlc(mode="LTP")
+                        lv = o.get('ltp') if isinstance(o, dict) else None
+                        if lv is None and isinstance(o, dict):
+                            lv = o.get('close')
+                        if lv is not None:
+                            atm_val = float(lv)
+                except Exception:
+                    pass
+
+                if atm_val is not None and 'strikePrice' in greeks_df.columns:
+                    try:
+                        greeks_df['__dist__'] = (greeks_df['strikePrice'].astype(float) - atm_val).abs()
+                        greeks_df = greeks_df.sort_values('__dist__')
+                        greeks_df = greeks_df.head(20)  # approx 10 each side
+                    except Exception:
+                        pass
+                st.dataframe(greeks_df[keep_cols] if keep_cols else greeks_df, width='stretch', height=300)
             else:
                 st.info("No Greeks data returned.")
         else:
@@ -473,6 +494,183 @@ if tab == "Dashboard":
         st.rerun()
 
 # ============ TRADE JOURNAL TAB ============
+elif tab == "Portfolio":
+    st.header("📁 Portfolio")
+    if st.session_state.broker is None:
+        st.warning("Broker not initialized.")
+    else:
+        # Cached fetchers to respect API rate limits
+        @st.cache_data(ttl=15)
+        def _fetch_holdings():
+            try:
+                return st.session_state.broker.get_holdings()
+            except Exception as e:
+                logger.exception(e)
+                return []
+
+        @st.cache_data(ttl=15)
+        def _fetch_all_holdings():
+            try:
+                return st.session_state.broker.get_all_holdings()
+            except Exception as e:
+                logger.exception(e)
+                return {}
+
+        @st.cache_data(ttl=15)
+        def _fetch_positions_book():
+            try:
+                # Prefer detailed positions book endpoint
+                if hasattr(st.session_state.broker, 'get_positions_book'):
+                    return st.session_state.broker.get_positions_book()
+                # Fallback to generic positions
+                return st.session_state.broker.get_positions()
+            except Exception as e:
+                logger.exception(e)
+                return []
+
+        # Controls
+        colr1, colr2 = st.columns([1,1])
+        with colr1:
+            refresh = st.button("🔄 Refresh Portfolio", use_container_width=True)
+        with colr2:
+            st.caption("Data cached for 15s to avoid API rate limits")
+
+        if refresh:
+            _fetch_holdings.clear()
+            _fetch_all_holdings.clear()
+            _fetch_positions_book.clear()
+
+        # Totals (all holdings)
+        all_hold = _fetch_all_holdings()
+        met1, met2, met3, met4 = st.columns(4)
+        with met1:
+            tv = all_hold.get('totalholdingvalue') if isinstance(all_hold, dict) else None
+            if tv is None and isinstance(all_hold, dict):
+                tv = all_hold.get('totalHoldingValue')
+            st.metric("Total Holding Value", f"₹{float(tv):,.2f}" if tv else "—")
+        with met2:
+            iv = all_hold.get('totalinvestmentvalue') if isinstance(all_hold, dict) else None
+            if iv is None and isinstance(all_hold, dict):
+                iv = all_hold.get('totalInvestmentValue')
+            st.metric("Total Investment", f"₹{float(iv):,.2f}" if iv else "—")
+        with met3:
+            pnl = all_hold.get('totalprofitandloss') if isinstance(all_hold, dict) else None
+            if pnl is None and isinstance(all_hold, dict):
+                pnl = all_hold.get('totalProfitAndLoss')
+            st.metric("Total P&L", f"₹{float(pnl):,.2f}" if pnl else "—")
+        with met4:
+            pnlp = all_hold.get('totalprofitandlosspercent') if isinstance(all_hold, dict) else None
+            if pnlp is None and isinstance(all_hold, dict):
+                pnlp = all_hold.get('totalProfitAndLossPercent')
+            st.metric("P&L %", f"{float(pnlp):.2f}%" if pnlp else "—")
+
+        st.divider()
+        st.subheader("📦 Holdings")
+        holdings = _fetch_holdings()
+        if holdings:
+            try:
+                hdf = pd.DataFrame(holdings)
+                st.dataframe(hdf, width='stretch', height=300)
+            except Exception as e:
+                st.warning(f"Failed to render holdings: {e}")
+        else:
+            st.info("No holdings returned.")
+
+        st.divider()
+        st.subheader("🧾 Positions (Day/Net)")
+        positions = _fetch_positions_book()
+        if positions:
+            try:
+                pdf = pd.DataFrame(positions)
+                st.dataframe(pdf, width='stretch', height=300)
+            except Exception as e:
+                st.warning(f"Failed to render positions: {e}")
+        else:
+            st.info("No positions returned.")
+
+elif tab == "Orders & Trades":
+    st.header("📑 Orders & Trades")
+    if st.session_state.broker is None:
+        st.warning("Broker not initialized.")
+    else:
+        @st.cache_data(ttl=15)
+        def _fetch_order_book():
+            try:
+                if hasattr(st.session_state.broker, 'get_order_book'):
+                    return st.session_state.broker.get_order_book()
+                # Fallback via SmartAPI SDK if method absent
+                return st.session_state.broker.smart_api.orderBook().get('data', [])
+            except Exception as e:
+                logger.exception(e)
+                return []
+
+        @st.cache_data(ttl=15)
+        def _fetch_trade_book():
+            try:
+                if hasattr(st.session_state.broker, 'get_trade_book'):
+                    return st.session_state.broker.get_trade_book()
+                return st.session_state.broker.smart_api.tradeBook().get('data', [])
+            except Exception as e:
+                logger.exception(e)
+                return []
+
+        colb1, colb2 = st.columns([1,1])
+        with colb1:
+            refresh_ob = st.button("🔄 Refresh Orders", use_container_width=True)
+        with colb2:
+            refresh_tb = st.button("🔄 Refresh Trades", use_container_width=True)
+
+        if refresh_ob:
+            _fetch_order_book.clear()
+        if refresh_tb:
+            _fetch_trade_book.clear()
+
+        st.subheader("🗂️ Order Book")
+        orders = _fetch_order_book()
+        if orders:
+            try:
+                odf = pd.DataFrame(orders)
+                # Common helpful columns if present
+                cols = [c for c in [
+                    'orderid','tradingsymbol','symboltoken','exchange','transactiontype','producttype',
+                    'ordertype','status','price','triggerprice','quantity','filledshares','unfilledshares',
+                    'createdtime','updatetime'
+                ] if c in odf.columns]
+                st.dataframe(odf[cols] if cols else odf, width='stretch', height=300)
+            except Exception as e:
+                st.warning(f"Failed to render order book: {e}")
+        else:
+            st.info("No orders returned.")
+
+        st.divider()
+        st.subheader("📒 Trade Book (Day Trades)")
+        trades = _fetch_trade_book()
+        if trades:
+            try:
+                tdf = pd.DataFrame(trades)
+                cols = [c for c in [
+                    'orderid','tradingsymbol','symboltoken','exchange','transactiontype','producttype',
+                    'price','quantity','filltime','tradetime'
+                ] if c in tdf.columns]
+                st.dataframe(tdf[cols] if cols else tdf, width='stretch', height=300)
+            except Exception as e:
+                st.warning(f"Failed to render trade book: {e}")
+        else:
+            st.info("No trades returned.")
+
+        st.divider()
+        st.subheader("📥 Import Manual Trades (CSV)")
+        uploaded = st.file_uploader("Upload CSV to merge into trade log", type=['csv'], key='manual_trades_uploader')
+        if uploaded is not None:
+            try:
+                res = st.session_state.trade_logger.import_trades_from_csv(uploaded)
+                if res.get('error'):
+                    st.error(f"Import failed: {res['error']}")
+                else:
+                    st.success(f"Imported: {res['imported']}, Total after merge: {res['total']}")
+            except Exception as e:
+                st.error(f"Import error: {e}")
+
 elif tab == "Trade Journal":
     st.header("📘 Trade Log")
     

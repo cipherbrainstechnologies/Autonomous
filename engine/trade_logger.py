@@ -206,6 +206,64 @@ class TradeLogger:
         # Write back to CSV
         df.to_csv(self.trades_file, index=False)
 
+    def import_trades_from_csv(self, file_like) -> Dict:
+        """
+        Import manual/external trades from an uploaded CSV and merge into trade log.
+
+        The CSV may have varying column names. This method attempts to normalize
+        to the expected schema and deduplicates on (timestamp, symbol, strike, direction, quantity).
+
+        Args:
+            file_like: Uploaded file-like object from Streamlit uploader
+
+        Returns:
+            Dict with keys: {"imported": int, "skipped": int, "total": int}
+        """
+        try:
+            incoming = pd.read_csv(file_like)
+        except Exception as e:
+            return {"imported": 0, "skipped": 0, "total": 0, "error": str(e)}
+
+        # Normalize columns
+        rename_map = {
+            'time': 'timestamp',
+            'datetime': 'timestamp',
+            'symbolname': 'symbol',
+            'tradingsymbol': 'symbol',
+            'qty': 'quantity',
+            'side': 'direction'
+        }
+        incoming.columns = [c.strip() for c in incoming.columns]
+        incoming = incoming.rename(columns={k: v for k, v in rename_map.items() if k in incoming.columns})
+
+        # Ensure all expected columns exist
+        expected_cols = ['timestamp','symbol','strike','direction','order_id','entry','sl','tp','exit','pnl','status','pre_reason','post_outcome','quantity']
+        for col in expected_cols:
+            if col not in incoming.columns:
+                incoming[col] = ''
+
+        # Coerce timestamp to string ISO if possible
+        try:
+            incoming['timestamp'] = pd.to_datetime(incoming['timestamp'], errors='coerce').dt.strftime('%Y-%m-%dT%H:%M:%S')
+        except Exception:
+            incoming['timestamp'] = incoming['timestamp'].astype(str)
+
+        # Read existing
+        existing = self.get_all_trades()
+        if existing.empty:
+            merged = incoming[expected_cols].copy()
+        else:
+            merged = pd.concat([existing, incoming[expected_cols]], ignore_index=True)
+
+        before = len(merged)
+        merged = merged.drop_duplicates(subset=['timestamp','symbol','strike','direction','quantity'], keep='first')
+        after = len(merged)
+
+        # Write back
+        merged.to_csv(self.trades_file, index=False)
+
+        return {"imported": len(incoming), "skipped": before + 0 - after, "total": after}
+
 
 def log_trade(trade: Dict):
     """
