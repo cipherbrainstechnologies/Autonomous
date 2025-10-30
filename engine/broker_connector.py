@@ -101,6 +101,19 @@ class BrokerInterface(ABC):
         """
         pass
 
+    @abstractmethod
+    def convert_position(self, request: Dict) -> bool:
+        """
+        Convert a position's product type (e.g., DELIVERY <-> INTRADAY).
+
+        Args:
+            request: Dict containing fields required by broker API
+
+        Returns:
+            True if conversion successful, False otherwise
+        """
+        pass
+
 
 class AngelOneBroker(BrokerInterface):
     """
@@ -156,9 +169,10 @@ class AngelOneBroker(BrokerInterface):
             "X-PrivateKey": self.api_key
         }
     
-    def _post_json(self, url: str, payload: Dict) -> Optional[Dict]:
+    def _request_json(self, method: str, url: str, payload: Optional[Dict] = None) -> Optional[Dict]:
         """
-        Helper to POST to Angel One REST endpoints with retry on auth/HTML responses.
+        Helper to call Angel One REST endpoints with retry on auth/HTML responses.
+        method: 'GET' or 'POST'
         """
         try:
             if not self._ensure_session() or not self.auth_token:
@@ -167,7 +181,13 @@ class AngelOneBroker(BrokerInterface):
             import requests
             headers = self._default_headers()
             headers.setdefault("User-Agent", "smartapi-client/1.0")
-            resp = requests.post(url, json=payload, headers=headers, timeout=10)
+            resp = requests.request(
+                method=method.upper(),
+                url=url,
+                json=(payload if method.upper() == 'POST' else None),
+                headers=headers,
+                timeout=10
+            )
             ctype = resp.headers.get('content-type', '').lower()
             if 'application/json' in ctype:
                 return resp.json()
@@ -179,7 +199,13 @@ class AngelOneBroker(BrokerInterface):
                     return None
                 headers = self._default_headers()
                 headers.setdefault("User-Agent", "smartapi-client/1.0")
-                resp = requests.post(url, json=payload, headers=headers, timeout=10)
+                resp = requests.request(
+                    method=method.upper(),
+                    url=url,
+                    json=(payload if method.upper() == 'POST' else None),
+                    headers=headers,
+                    timeout=10
+                )
                 ctype = resp.headers.get('content-type', '').lower()
                 if 'application/json' in ctype:
                     return resp.json()
@@ -270,10 +296,11 @@ class AngelOneBroker(BrokerInterface):
         try:
             feed_token_data = self.smart_api.getfeedToken()
             
-            # Handle case where response might be a string or unexpected format
+            # Handle case where response might be a string token
             if isinstance(feed_token_data, str):
-                logger.error(f"Feed token API returned string instead of dict: {feed_token_data[:100]}")
-                return False
+                self.feed_token = feed_token_data
+                logger.info("Feed token retrieved successfully (string token)")
+                return True
             
             if not isinstance(feed_token_data, dict):
                 logger.error(f"Feed token API returned unexpected type: {type(feed_token_data)}")
@@ -789,6 +816,24 @@ class AngelOneBroker(BrokerInterface):
         """
         logger.info("Manual session refresh requested")
         return self._refresh_token()
+
+    def convert_position(self, request: Dict) -> bool:
+        """
+        Convert position via Angel One convertPosition endpoint.
+        """
+        try:
+            url = "https://apiconnect.angelone.in/rest/secure/angelbroking/order/v1/convertPosition"
+            data = self._post_json(url, request)
+            if not isinstance(data, dict):
+                return False
+            if data.get('status') is False:
+                logger.error(f"Convert position error: {data.get('message')}")
+                return False
+            logger.info("Position converted successfully")
+            return True
+        except Exception as e:
+            logger.exception(f"Error converting position: {e}")
+            return False
     
     def get_market_quote(self, params: Dict) -> Dict:
         """
@@ -878,7 +923,7 @@ class AngelOneBroker(BrokerInterface):
         """
         try:
             url = "https://apiconnect.angelone.in/rest/secure/angelbroking/portfolio/v1/getHolding"
-            data = self._post_json(url, {})
+            data = self._request_json('GET', url)
             if not isinstance(data, dict):
                 return []
             if data.get('status') is False:
@@ -900,7 +945,7 @@ class AngelOneBroker(BrokerInterface):
         """
         try:
             url = "https://apiconnect.angelone.in/rest/secure/angelbroking/portfolio/v1/getAllHolding"
-            data = self._post_json(url, {})
+            data = self._request_json('GET', url)
             if not isinstance(data, dict):
                 return {}
             if data.get('status') is False:
@@ -922,7 +967,7 @@ class AngelOneBroker(BrokerInterface):
         """
         try:
             url = "https://apiconnect.angelone.in/rest/secure/angelbroking/order/v1/getPosition"
-            data = self._post_json(url, {})
+            data = self._request_json('GET', url)
             if not isinstance(data, dict):
                 return []
             if data.get('status') is False:
@@ -943,26 +988,12 @@ class AngelOneBroker(BrokerInterface):
             List of order dictionaries
         """
         try:
-            if not self._ensure_session():
-                logger.error("Cannot fetch order book: No valid session")
-                return []
-            if not self.auth_token:
-                logger.error("Auth token not available for order book API")
-                return []
-            import requests
             url = "https://apiconnect.angelone.in/rest/secure/angelbroking/order/v1/getOrderBook"
-            headers = self._default_headers()
-            resp = requests.post(url, json={}, headers=headers, timeout=10)
-            if resp.status_code != 200:
-                logger.error(f"OrderBook API status {resp.status_code}: {resp.text[:200]}")
+            data = self._request_json('GET', url)
+            if not isinstance(data, dict):
                 return []
-            ctype = resp.headers.get('content-type', '').lower()
-            if 'application/json' not in ctype:
-                logger.error(f"OrderBook API non-JSON response: {ctype}")
-                return []
-            data = resp.json()
-            if not isinstance(data, dict) or data.get('status') is False:
-                logger.error(f"OrderBook API error: {data.get('message') if isinstance(data, dict) else 'Unknown'}")
+            if data.get('status') is False:
+                logger.error(f"OrderBook API error: {data.get('message')}")
                 return []
             orders = data.get('data', []) or []
             logger.info(f"Fetched {len(orders)} orders")
@@ -979,26 +1010,12 @@ class AngelOneBroker(BrokerInterface):
             List of trade dictionaries
         """
         try:
-            if not self._ensure_session():
-                logger.error("Cannot fetch trade book: No valid session")
-                return []
-            if not self.auth_token:
-                logger.error("Auth token not available for trade book API")
-                return []
-            import requests
             url = "https://apiconnect.angelone.in/rest/secure/angelbroking/order/v1/getTradeBook"
-            headers = self._default_headers()
-            resp = requests.post(url, json={}, headers=headers, timeout=10)
-            if resp.status_code != 200:
-                logger.error(f"TradeBook API status {resp.status_code}: {resp.text[:200]}")
+            data = self._request_json('GET', url)
+            if not isinstance(data, dict):
                 return []
-            ctype = resp.headers.get('content-type', '').lower()
-            if 'application/json' not in ctype:
-                logger.error(f"TradeBook API non-JSON response: {ctype}")
-                return []
-            data = resp.json()
-            if not isinstance(data, dict) or data.get('status') is False:
-                logger.error(f"TradeBook API error: {data.get('message') if isinstance(data, dict) else 'Unknown'}")
+            if data.get('status') is False:
+                logger.error(f"TradeBook API error: {data.get('message')}")
                 return []
             trades = data.get('data', []) or []
             logger.info(f"Fetched {len(trades)} trades")
@@ -1091,6 +1108,11 @@ class FyersBroker(BrokerInterface):
         quantity: Optional[int] = None
     ) -> bool:
         """Modify order via Fyers."""
+        # Placeholder
+        return True
+
+    def convert_position(self, request: Dict) -> bool:
+        """Convert position via Fyers (placeholder)."""
         # Placeholder
         return True
 
