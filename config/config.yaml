@@ -8,6 +8,7 @@ strategy:
   type: inside_bar
   sl: 30              # Stop Loss in points
   rr: 1.8             # Risk-Reward Ratio
+  atm_offset: 0        # Strike offset from ATM (0 = ATM, positive = OTM for calls)
   filters:
     volume_spike: true
     avoid_open_range: true
@@ -39,10 +40,12 @@ logging:
 # Market Data Configuration
 market_data:
   polling_interval_seconds: 900  # 15 minutes
-  max_retries: 3
-  retry_delay_seconds: 5
+  max_retries: 3  # Maximum retry attempts for API calls
+  retry_delay_seconds: 5  # Delay between retries
   nifty_symbol: "NIFTY"  # Trading symbol for NIFTY index
   nifty_exchange: "NSE"
-  data_window_hours_1h: 48
-  data_window_hours_15m: 12
+  data_window_hours_1h: 48  # Window for 1-hour candles
+  data_window_hours_15m: 12  # Window for 15-minute candles
+  use_direct_intervals: true  # Prefer direct interval fetching (ONE_HOUR, FIFTEEN_MINUTE) over resampling
+  api_delay_minutes: 5  # Request data up to N minutes ago to avoid API delays
 

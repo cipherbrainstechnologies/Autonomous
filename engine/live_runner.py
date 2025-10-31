@@ -165,25 +165,32 @@ class LiveStrategyRunner:
             self.market_data.refresh_data()
             self.last_fetch_time = datetime.now()
             
-            # Get aggregated dataframes
+            # Get aggregated dataframes (prefer direct interval fetching with fallback to resampling)
             data_1h = self.market_data.get_1h_data(
-                window_hours=self.config.get('market_data', {}).get('data_window_hours_1h', 48)
+                window_hours=self.config.get('market_data', {}).get('data_window_hours_1h', 48),
+                use_direct_interval=True  # Try ONE_HOUR interval first
             )
             data_15m = self.market_data.get_15m_data(
-                window_hours=self.config.get('market_data', {}).get('data_window_hours_15m', 12)
+                window_hours=self.config.get('market_data', {}).get('data_window_hours_15m', 12),
+                use_direct_interval=True  # Try FIFTEEN_MINUTE interval first
             )
             
             # Check if we have sufficient data
             if data_1h.empty or data_15m.empty:
-                logger.warning("Insufficient market data, skipping cycle")
+                logger.warning("Insufficient market data - empty dataframes. Skipping cycle. Check API connectivity or wait for market data.")
                 return
             
-            if len(data_1h) < 24:  # Need at least 24 hours for Inside Bar detection
-                logger.warning(f"Insufficient 1h data ({len(data_1h)} candles), skipping cycle")
+            # Log candle counts for diagnostics
+            logger.info(f"1H candles available: {len(data_1h)}, 15m candles available: {len(data_15m)}")
+            
+            if len(data_1h) < 20:  # Need at least 20 candles for Inside Bar detection
+                logger.warning(f"Insufficient 1h data ({len(data_1h)} candles). Need at least 20. Skipping cycle. Data may be too recent or aggregation failed.")
                 return
             
-            if len(data_15m) < 60:  # Need at least 15 hours for breakout confirmation
-                logger.warning(f"Insufficient 15m data ({len(data_15m)} candles), skipping cycle")
+            if len(data_15m) < 5:  # Need at least 5 candles for breakout confirmation
+                logger.warning(f"Insufficient 15m data ({len(data_15m)} candles). Need at least 5. Skipping cycle. Consider waiting 5-10 minutes for new candles.")
+                if len(data_15m) == 0:
+                    logger.warning("No valid 15-minute candles available. Strategy will skip this cycle. Waiting for next cycle may help.")
                 return
             
             logger.info(f"Processing strategy with {len(data_1h)} 1h candles and {len(data_15m)} 15m candles")

@@ -87,7 +87,8 @@ class SignalHandler:
         # Get strategy configuration
         strategy_config = {
             'sl': self.config.get('strategy', {}).get('sl', 30),
-            'rr': self.config.get('strategy', {}).get('rr', 1.8)
+            'rr': self.config.get('strategy', {}).get('rr', 1.8),
+            'atm_offset': self.config.get('strategy', {}).get('atm_offset', 0)
         }
         
         # Generate signal

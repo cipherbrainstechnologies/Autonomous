@@ -8,6 +8,10 @@ from datetime import datetime, timedelta
 import time
 from logzero import logger
 
+# Retry configuration for resilient API calls
+MAX_RETRIES = 3
+RETRY_DELAY = 5  # seconds
+
 try:
     from SmartApi.smartConnect import SmartConnect
 except ImportError:
@@ -66,18 +70,29 @@ class MarketDataProvider:
         Returns:
             True if candle is complete, False if still forming
         """
-        # Get current time (timezone-naive)
+        # Get current time in IST (timezone-naive, but assume IST)
+        # Note: datetime.now() returns local time (which should be IST for Indian systems)
         current_time = datetime.now()
         
-        # Normalize candle_time: if it's timezone-aware (from API), convert to naive
+        # Normalize candle_time: if it's timezone-aware (from API), convert to IST-naive
         # Convert pandas Timestamp to Python datetime if needed
         if hasattr(candle_time, 'to_pydatetime'):
             candle_time = candle_time.to_pydatetime()
         
-        # If candle_time is timezone-aware, remove timezone info (convert to naive)
+        # If candle_time is timezone-aware, convert to IST then remove timezone info
         if candle_time.tzinfo is not None:
-            # Convert to local timezone and then remove tzinfo
-            candle_time = candle_time.replace(tzinfo=None)
+            # Convert to IST first, then remove timezone info
+            try:
+                import pytz
+                ist = pytz.timezone('Asia/Kolkata')
+                if candle_time.tzinfo != ist:
+                    # Convert to IST
+                    candle_time = candle_time.astimezone(ist)
+                # Remove timezone info to make it naive (IST)
+                candle_time = candle_time.replace(tzinfo=None)
+            except ImportError:
+                # Fallback: just remove timezone (assume already IST)
+                candle_time = candle_time.replace(tzinfo=None)
         
         next_candle_start = candle_time + timedelta(minutes=timeframe_minutes)
         
@@ -103,9 +118,10 @@ class MarketDataProvider:
         if not pd.api.types.is_datetime64_any_dtype(df['Date']):
             df['Date'] = pd.to_datetime(df['Date'])
         
-        # Normalize Date column to timezone-naive if needed (safety check)
+        # Normalize Date column to IST-naive if needed (safety check)
         if df['Date'].dt.tz is not None:
-            df['Date'] = df['Date'].dt.tz_convert('UTC').dt.tz_localize(None)
+            # Convert to IST, then remove timezone info
+            df['Date'] = df['Date'].dt.tz_convert('Asia/Kolkata').dt.tz_localize(None)
         
         # Check each candle and filter out incomplete ones
         complete_candles = []
@@ -134,6 +150,87 @@ class MarketDataProvider:
             time.sleep(sleep_time)
         
         self._last_request_time = time.time()
+    
+    def _fetch_candles_with_retry(
+        self,
+        params: Dict,
+        max_retries: int = MAX_RETRIES,
+        retry_delay: int = RETRY_DELAY
+    ) -> Optional[Dict]:
+        """
+        Fetch historical candles with retry logic for resilient API calls.
+        Handles AB1004 and other transient errors.
+        
+        Args:
+            params: Parameters for getCandleData API call
+            max_retries: Maximum number of retry attempts (default: 3)
+            retry_delay: Delay between retries in seconds (default: 5)
+        
+        Returns:
+            API response dictionary or None if all retries failed
+        """
+        for attempt in range(1, max_retries + 1):
+            try:
+                self._rate_limit()
+                
+                # Call SmartAPI getCandleData
+                response = self.smart_api.getCandleData(params)
+                
+                # Check if response is valid
+                if not isinstance(response, dict):
+                    logger.warning(f"[Retry {attempt}/{max_retries}] Historical candles API returned unexpected type: {type(response)}")
+                    if attempt < max_retries:
+                        time.sleep(retry_delay)
+                        continue
+                    return None
+                
+                # Check response status
+                if response.get('status') == True or response.get('status') is None:
+                    # If status is True or None, check if data exists
+                    data = response.get('data', [])
+                    if data or len(data) > 0:
+                        logger.debug(f"Successfully fetched candles on attempt {attempt}")
+                        return response
+                    else:
+                        logger.warning(f"[Retry {attempt}/{max_retries}] Empty or invalid data in response")
+                else:
+                    error_msg = response.get('message', 'Unknown error')
+                    error_code = response.get('errorcode', '')
+                    logger.warning(f"[Retry {attempt}/{max_retries}] Historical candles fetch failed: {error_msg} (code: {error_code})")
+                    
+                    # For AB1004 or other errors, retry with smaller window on last attempt
+                    if attempt == max_retries - 1 and error_code in ['AB1004', '']:
+                        logger.info("Attempting final retry with smaller date window")
+                        # Try with 6-hour window instead of full window
+                        smaller_from = (datetime.now() - timedelta(hours=6)).strftime("%Y-%m-%d %H:%M")
+                        retry_params = params.copy()
+                        retry_params['fromdate'] = smaller_from
+                        self._rate_limit()
+                        retry_resp = self.smart_api.getCandleData(retry_params)
+                        if isinstance(retry_resp, dict) and (retry_resp.get('status') == True or retry_resp.get('status') is None):
+                            data = retry_resp.get('data', [])
+                            if data and len(data) > 0:
+                                logger.info(f"Retry with smaller window succeeded on attempt {attempt + 1}")
+                                return retry_resp
+                
+                # If not successful and not last attempt, sleep and retry
+                if attempt < max_retries:
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    logger.error(f"All {max_retries} retries failed for getCandleData")
+                    return None
+                    
+            except Exception as e:
+                logger.error(f"[Retry {attempt}/{max_retries}] Exception occurred: {e}")
+                if attempt < max_retries:
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    logger.error("All retries exhausted due to exceptions")
+                    return None
+        
+        return None
     
     def _get_nifty_token(self) -> Optional[str]:
         """
@@ -182,8 +279,8 @@ class MarketDataProvider:
                         return self.nifty_token
             
             # Fallback: Use known NIFTY 50 token (common token: 99926000 for NIFTY 50 index)
-            # This is a workaround if symbol search API doesn't work
-            logger.warning("NIFTY token not found via search, trying known token")
+            # This is a workaround if symbol search API doesn't work (expected for some brokers)
+            logger.info("NIFTY token not found via search API, using known fallback token (99926000)")
             known_nifty_token = "99926000"  # Known NIFTY 50 index token on NSE
             
             # Verify the token works by trying to fetch market data
@@ -191,7 +288,7 @@ class MarketDataProvider:
             if test_ohlc:
                 self.nifty_token = known_nifty_token
                 self.nifty_tradingsymbol = "NIFTY"
-                logger.info(f"Using known NIFTY token: {self.nifty_token}")
+                logger.info(f"Successfully using known NIFTY token: {self.nifty_token}")
                 return self.nifty_token
             
             logger.error("NIFTY index not found and known token verification failed")
@@ -323,15 +420,15 @@ class MarketDataProvider:
                 if symbol_token is None:
                     return None
             
-            # Default to last 48 hours if dates not provided
+            # Default to last 3 days if dates not provided (expanded for reliable resampling)
             if to_date is None:
                 to_date = datetime.now().strftime("%Y-%m-%d %H:%M")
             
             if from_date is None:
-                from_datetime = datetime.now() - timedelta(hours=48)
+                # Expand to 3 days to ensure sufficient data for aggregation
+                from_datetime = datetime.now() - timedelta(days=3)
                 from_date = from_datetime.strftime("%Y-%m-%d %H:%M")
-            
-            self._rate_limit()
+                logger.debug(f"Fetching historical data from {from_date} to {to_date} (3-day window)")
             
             # Format request for getCandleData
             params = {
@@ -342,37 +439,12 @@ class MarketDataProvider:
                 "todate": to_date
             }
             
-            # Call SmartAPI getCandleData
-            response = self.smart_api.getCandleData(params)
+            # Call SmartAPI getCandleData with retry logic
+            response = self._fetch_candles_with_retry(params)
             
-            # Check if response is valid
-            if not isinstance(response, dict):
-                logger.error(f"Historical candles API returned unexpected type: {type(response)}")
-                logger.debug(f"Response: {str(response)[:200]}")
+            if response is None:
+                logger.error("Failed to fetch historical candles after all retries")
                 return None
-            
-            if response.get('status') == False:
-                error_msg = response.get('message', 'Unknown error')
-                error_code = response.get('errorcode', '')
-                logger.error(f"Historical candles fetch failed: {error_msg} (code: {error_code})")
-                # Retry once with a smaller window if generic failure (e.g., AB1004)
-                try:
-                    smaller_from = (datetime.now() - timedelta(hours=6)).strftime("%Y-%m-%d %H:%M")
-                    retry_params = {
-                        "exchange": exchange,
-                        "symboltoken": symbol_token,
-                        "interval": interval,
-                        "fromdate": smaller_from,
-                        "todate": to_date
-                    }
-                    self._rate_limit()
-                    retry_resp = self.smart_api.getCandleData(retry_params)
-                    if isinstance(retry_resp, dict) and retry_resp.get('status'):
-                        response = retry_resp
-                    else:
-                        return None
-                except Exception:
-                    return None
             
             # Parse response
             # SmartAPI getCandleData may return data in different formats
@@ -400,10 +472,14 @@ class MarketDataProvider:
                         data = []
             
             if not data or len(data) == 0:
-                logger.warning("No historical candle data returned")
+                logger.warning(f"No historical candle data returned for interval {interval} from {from_date} to {to_date}")
                 logger.debug(f"Response keys: {list(response.keys()) if isinstance(response, dict) else 'N/A'}")
                 if isinstance(response.get('data'), dict):
                     logger.debug(f"Response data keys: {list(response.get('data', {}).keys())}")
+                    logger.debug(f"Response data content: {str(response.get('data', {}))[:500]}")
+                # Log error code and message if available
+                if response.get('errorcode'):
+                    logger.debug(f"API error code: {response.get('errorcode')}, message: {response.get('message', 'N/A')}")
                 # This might be normal if market is closed or no data for the time range
                 return None
             
@@ -464,13 +540,18 @@ class MarketDataProvider:
                     try:
                         # Parse timestamp - may be timezone-aware from API
                         parsed_dates = pd.to_datetime(df[col])
-                        # Convert timezone-aware datetimes to naive for consistent comparison
+                        # Convert timezone-aware datetimes to IST (Indian Standard Time)
+                        # Indian market uses IST (UTC+5:30)
                         if parsed_dates.dt.tz is not None:
-                            # Convert to UTC first, then remove timezone info to make it naive
-                            parsed_dates = parsed_dates.dt.tz_convert('UTC').dt.tz_localize(None)
+                            # Convert to IST first, then remove timezone info to make it naive IST
+                            parsed_dates = parsed_dates.dt.tz_convert('Asia/Kolkata').dt.tz_localize(None)
+                        else:
+                            # If naive, assume it's already in IST (common for Indian broker APIs)
+                            # Log for debugging
+                            logger.debug(f"Timestamp is timezone-naive, assuming IST")
                         df['Date'] = parsed_dates
                         timestamp_found = True
-                        logger.debug(f"Using '{col}' column as timestamp")
+                        logger.debug(f"Using '{col}' column as timestamp (converted to IST)")
                         break
                     except Exception as e:
                         logger.debug(f"Failed to parse '{col}' as timestamp: {e}")
@@ -481,12 +562,15 @@ class MarketDataProvider:
                 first_col = df.columns[0]
                 try:
                     parsed_dates = pd.to_datetime(df[first_col])
-                    # Normalize timezone-aware to naive
+                    # Normalize timezone-aware to IST
                     if parsed_dates.dt.tz is not None:
-                        parsed_dates = parsed_dates.dt.tz_convert('UTC').dt.tz_localize(None)
+                        # Convert to IST, then remove timezone info
+                        parsed_dates = parsed_dates.dt.tz_convert('Asia/Kolkata').dt.tz_localize(None)
+                    else:
+                        logger.debug(f"First column timestamp is timezone-naive, assuming IST")
                     df['Date'] = parsed_dates
                     timestamp_found = True
-                    logger.debug(f"Using first column '{first_col}' as timestamp")
+                    logger.debug(f"Using first column '{first_col}' as timestamp (IST)")
                 except Exception:
                     pass
             
@@ -496,12 +580,15 @@ class MarketDataProvider:
                 # Try to use index as timestamp if it's datetime
                 if isinstance(df.index, pd.DatetimeIndex):
                     index_dates = df.index
-                    # Normalize timezone-aware to naive
+                    # Normalize timezone-aware to IST
                     if index_dates.tz is not None:
-                        index_dates = index_dates.tz_convert('UTC').tz_localize(None)
+                        # Convert to IST, then remove timezone info
+                        index_dates = index_dates.tz_convert('Asia/Kolkata').tz_localize(None)
+                    else:
+                        logger.debug("Index timestamp is timezone-naive, assuming IST")
                     df['Date'] = index_dates
                     timestamp_found = True
-                    logger.debug("Using DataFrame index as timestamp")
+                    logger.debug("Using DataFrame index as timestamp (IST)")
                 else:
                     return None
             
@@ -531,7 +618,12 @@ class MarketDataProvider:
             df = df[required_cols].copy()
             df = df.sort_values('Date').reset_index(drop=True)
             
-            logger.info(f"Fetched {len(df)} historical candles from {from_date} to {to_date}")
+            # Log successful fetch with details
+            if len(df) > 0:
+                logger.info(f"Fetched {len(df)} historical candles from {from_date} to {to_date} (interval: {interval})")
+                logger.debug(f"Date range: {df['Date'].min()} to {df['Date'].max()}")
+            else:
+                logger.warning(f"No candles returned for interval {interval} from {from_date} to {to_date}")
             
             return df
             
@@ -555,6 +647,16 @@ class MarketDataProvider:
         # Ensure Date is datetime
         if not pd.api.types.is_datetime64_any_dtype(raw_data['Date']):
             raw_data['Date'] = pd.to_datetime(raw_data['Date'])
+        
+        # Drop duplicates by Date (keep first occurrence)
+        raw_data = raw_data.drop_duplicates(subset=['Date'], keep='first')
+        
+        # Drop rows with NaN values before resampling
+        raw_data = raw_data.dropna(subset=['Open', 'High', 'Low', 'Close'])
+        
+        if raw_data.empty:
+            logger.warning("No valid 1-minute candles after dropping NaNs/duplicates")
+            return pd.DataFrame(columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
         
         # Set Date as index for resampling
         df = raw_data.set_index('Date').copy()
@@ -595,6 +697,16 @@ class MarketDataProvider:
         if not pd.api.types.is_datetime64_any_dtype(raw_data['Date']):
             raw_data['Date'] = pd.to_datetime(raw_data['Date'])
         
+        # Drop duplicates by Date (keep first occurrence)
+        raw_data = raw_data.drop_duplicates(subset=['Date'], keep='first')
+        
+        # Drop rows with NaN values before resampling
+        raw_data = raw_data.dropna(subset=['Open', 'High', 'Low', 'Close'])
+        
+        if raw_data.empty:
+            logger.warning("No valid 1-minute candles after dropping NaNs/duplicates for 1H aggregation")
+            return pd.DataFrame(columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
+        
         # Set Date as index for resampling
         df = raw_data.set_index('Date').copy()
         
@@ -616,31 +728,78 @@ class MarketDataProvider:
         
         return aggregated
     
-    def get_1h_data(self, window_hours: int = 48) -> pd.DataFrame:
+    def get_1h_data(self, window_hours: int = 48, use_direct_interval: bool = True) -> pd.DataFrame:
         """
         Get 1-hour aggregated data.
+        Tries direct ONE_HOUR interval first, falls back to resampling from ONE_MINUTE if needed.
         
         Args:
             window_hours: Number of hours of data to return (default: 48)
+            use_direct_interval: If True, try fetching ONE_HOUR directly first (default: True)
         
         Returns:
             DataFrame with 1-hour OHLC candles
         """
-        # Try to get historical data first
+        # IMPORTANT: Request data up to 5 minutes ago to avoid API delay issues
+        current_time = datetime.now()
+        to_time = current_time - timedelta(minutes=5)
+        from_time = current_time - timedelta(hours=window_hours + 12)  # Add buffer for complete candles
+        
+        # Try direct ONE_HOUR interval first (more efficient)
+        if use_direct_interval:
+            hist_data_direct = self.get_historical_candles(
+                interval="ONE_HOUR",
+                from_date=from_time.strftime("%Y-%m-%d %H:%M"),
+                to_date=to_time.strftime("%Y-%m-%d %H:%M")
+            )
+            
+            if hist_data_direct is not None and not hist_data_direct.empty:
+                logger.info(f"Successfully fetched {len(hist_data_direct)} 1-hour candles directly")
+                self._data_1h = hist_data_direct
+                # Trim to requested window (keep most recent)
+                if len(self._data_1h) > window_hours:
+                    self._data_1h = self._data_1h.tail(window_hours).copy()
+                    logger.debug(f"Trimmed to {window_hours} most recent 1-hour candles")
+                
+                # Exclude incomplete candles and return
+                all_candles = self._data_1h.copy()
+                complete_candles = self._get_complete_candles(all_candles, timeframe_minutes=60)
+                if len(complete_candles) < len(all_candles):
+                    excluded_count = len(all_candles) - len(complete_candles)
+                    logger.info(f"Excluded {excluded_count} incomplete 1-hour candle(s) from strategy data")
+                if complete_candles.empty:
+                    logger.warning("No complete 1-hour candles available after filtering")
+                return complete_candles
+            else:
+                logger.info("Direct ONE_HOUR fetch failed or returned empty, falling back to resampling from ONE_MINUTE")
+        
+        # Fallback: Fetch 1-minute data and resample
+        fetch_window_days = 3
         hist_data = self.get_historical_candles(
             interval="ONE_MINUTE",
-            from_date=(datetime.now() - timedelta(hours=window_hours)).strftime("%Y-%m-%d %H:%M"),
-            to_date=datetime.now().strftime("%Y-%m-%d %H:%M")
+            from_date=(current_time - timedelta(days=fetch_window_days)).strftime("%Y-%m-%d %H:%M"),
+            to_date=to_time.strftime("%Y-%m-%d %H:%M")
         )
         
         if hist_data is not None and not hist_data.empty:
+            logger.info(f"Fetched {len(hist_data)} 1-minute candles for 1-hour aggregation")
+            
+            # Check if we have minimum required candles (need at least ~60 for 1 hour of data)
+            if len(hist_data) < 60:
+                logger.warning(f"Insufficient 1-minute data ({len(hist_data)} candles). Need at least 60 candles. Data may be too recent or unavailable.")
+                return pd.DataFrame(columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
+            
             # Aggregate to 1-hour
             self._data_1h = self._aggregate_to_1h(hist_data)
             
-            # Trim to window
+            logger.info(f"Aggregated to {len(self._data_1h)} 1-hour candles")
+            
+            # Trim to requested window (keep most recent)
             if len(self._data_1h) > window_hours:
                 self._data_1h = self._data_1h.tail(window_hours).copy()
+                logger.debug(f"Trimmed to {window_hours} most recent 1-hour candles")
         else:
+            logger.warning("No historical 1-minute data available for 1-hour aggregation. Data may be too recent or API unavailable.")
             # Fallback: Fetch current OHLC and add to buffer
             ohlc = self.fetch_ohlc(mode="OHLC")
             if ohlc:
@@ -674,34 +833,85 @@ class MarketDataProvider:
             excluded_count = len(all_candles) - len(complete_candles)
             logger.info(f"Excluded {excluded_count} incomplete 1-hour candle(s) from strategy data")
         
+        if complete_candles.empty:
+            logger.warning("No complete 1-hour candles available after filtering")
+        
         return complete_candles
     
-    def get_15m_data(self, window_hours: int = 12) -> pd.DataFrame:
+    def get_15m_data(self, window_hours: int = 12, use_direct_interval: bool = True) -> pd.DataFrame:
         """
         Get 15-minute aggregated data.
+        Tries direct FIFTEEN_MINUTE interval first, falls back to resampling from ONE_MINUTE if needed.
         
         Args:
             window_hours: Number of hours of data to return (default: 12)
+            use_direct_interval: If True, try fetching FIFTEEN_MINUTE directly first (default: True)
         
         Returns:
             DataFrame with 15-minute OHLC candles
         """
-        # Try to get historical data first
+        # IMPORTANT: Request data up to 5 minutes ago to avoid API delay issues
+        current_time = datetime.now()
+        to_time = current_time - timedelta(minutes=5)
+        from_time = current_time - timedelta(hours=window_hours + 2)  # Add buffer for complete candles
+        
+        # Try direct FIFTEEN_MINUTE interval first (more efficient)
+        if use_direct_interval:
+            hist_data_direct = self.get_historical_candles(
+                interval="FIFTEEN_MINUTE",
+                from_date=from_time.strftime("%Y-%m-%d %H:%M"),
+                to_date=to_time.strftime("%Y-%m-%d %H:%M")
+            )
+            
+            if hist_data_direct is not None and not hist_data_direct.empty:
+                logger.info(f"Successfully fetched {len(hist_data_direct)} 15-minute candles directly")
+                self._data_15m = hist_data_direct
+                # Trim to requested window (keep most recent)
+                max_candles = (window_hours * 60) // 15
+                if len(self._data_15m) > max_candles:
+                    self._data_15m = self._data_15m.tail(max_candles).copy()
+                    logger.debug(f"Trimmed to {max_candles} most recent 15-minute candles")
+                
+                # Exclude incomplete candles and return
+                all_candles = self._data_15m.copy()
+                complete_candles = self._get_complete_candles(all_candles, timeframe_minutes=15)
+                if len(complete_candles) < len(all_candles):
+                    excluded_count = len(all_candles) - len(complete_candles)
+                    logger.info(f"Excluded {excluded_count} incomplete 15-minute candle(s) from strategy data")
+                if complete_candles.empty:
+                    logger.warning("No complete 15-minute candles available after filtering. Consider waiting 5-10 minutes for new candles to form.")
+                return complete_candles
+            else:
+                logger.info("Direct FIFTEEN_MINUTE fetch failed or returned empty, falling back to resampling from ONE_MINUTE")
+        
+        # Fallback: Fetch 1-minute data and resample
+        fetch_window_days = 3
         hist_data = self.get_historical_candles(
             interval="ONE_MINUTE",
-            from_date=(datetime.now() - timedelta(hours=window_hours)).strftime("%Y-%m-%d %H:%M"),
-            to_date=datetime.now().strftime("%Y-%m-%d %H:%M")
+            from_date=(current_time - timedelta(days=fetch_window_days)).strftime("%Y-%m-%d %H:%M"),
+            to_date=to_time.strftime("%Y-%m-%d %H:%M")
         )
         
         if hist_data is not None and not hist_data.empty:
+            logger.info(f"Fetched {len(hist_data)} 1-minute candles for 15-minute aggregation")
+            
+            # Check if we have minimum required candles (need at least ~60 for 15 hours of 15m data)
+            if len(hist_data) < 60:
+                logger.warning(f"Insufficient 1-minute data ({len(hist_data)} candles). Need at least 60 candles. Data may be too recent or unavailable.")
+                return pd.DataFrame(columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
+            
             # Aggregate to 15-minute
             self._data_15m = self._aggregate_to_15m(hist_data)
             
-            # Trim to window
+            logger.info(f"Aggregated to {len(self._data_15m)} 15-minute candles")
+            
+            # Trim to requested window (keep most recent)
             max_candles = (window_hours * 60) // 15
             if len(self._data_15m) > max_candles:
                 self._data_15m = self._data_15m.tail(max_candles).copy()
+                logger.debug(f"Trimmed to {max_candles} most recent 15-minute candles")
         else:
+            logger.warning("No historical 1-minute data available for 15-minute aggregation. Data may be too recent or API unavailable.")
             # Fallback: Fetch current OHLC
             ohlc = self.fetch_ohlc(mode="OHLC")
             if ohlc:
@@ -738,6 +948,9 @@ class MarketDataProvider:
         if len(complete_candles) < len(all_candles):
             excluded_count = len(all_candles) - len(complete_candles)
             logger.info(f"Excluded {excluded_count} incomplete 15-minute candle(s) from strategy data")
+        
+        if complete_candles.empty:
+            logger.warning("No complete 15-minute candles available after filtering. Consider waiting 5-10 minutes for new candles to form.")
         
         return complete_candles
     

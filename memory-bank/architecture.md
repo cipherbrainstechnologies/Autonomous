@@ -58,18 +58,39 @@ The NIFTY Options Algo Trading System is a secure, cloud-ready algorithmic tradi
 
 ## Strategy Logic
 
-### Inside Bar Pattern
+### Inside Bar Pattern Detection (1H Timeframe)
 - Detects when a candle is completely contained within the previous candle's range
+- Pattern condition: `current_high < prev_high AND current_low > prev_low`
 - Requires at least 2 candles of historical data
+- Uses the most recent Inside Bar to mark breakout range
 
-### Breakout Confirmation
-- Monitors 15-minute timeframe for breakout
-- Requires volume spike (above 5-candle average)
+### Breakout Confirmation (15m Timeframe)
+- Monitors last 5 candles on 15-minute timeframe for breakout
+- Checks each candle (oldest to newest) for valid breakout
+- **Bullish Breakout (CE)**: Close > range_high AND Volume > threshold
+- **Bearish Breakout (PE)**: Close < range_low AND Volume > threshold
+- Volume threshold = Average volume of last 5 candles × multiplier (default 1.0)
 - Direction determines Call (CE) or Put (PE) option selection
+
+### Strike Selection
+- ATM (At The Money) based on current NIFTY price
+- Strike rounded to nearest 50 (NIFTY strikes are multiples of 50)
+- Configurable `atm_offset` parameter for strike adjustment (default: 0)
 
 ### Risk Management
 - Fixed Stop Loss (configurable, default 30 points)
 - Risk-Reward Ratio (configurable, default 1.8)
+- Stop Loss: Entry - sl_points
+- Take Profit: Entry + (sl_points × rr_ratio)
 - Volume spike filter (optional)
 - Open range avoidance filter (optional)
+
+### Signal Output
+- Direction (CE/PE)
+- Strike price
+- Entry price
+- Stop Loss level
+- Take Profit level
+- Range high/low
+- Signal reason and timestamp
 

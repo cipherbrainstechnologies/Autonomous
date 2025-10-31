@@ -6,6 +6,7 @@ Implements Inside Bar detection and 15-minute breakout confirmation
 import pandas as pd
 import numpy as np
 from typing import List, Optional, Dict, Tuple
+from logzero import logger
 
 
 def detect_inside_bar(data_1h: pd.DataFrame) -> List[int]:
@@ -17,7 +18,7 @@ def detect_inside_bar(data_1h: pd.DataFrame) -> List[int]:
     
     Args:
         data_1h: DataFrame with OHLC data for 1-hour timeframe
-                 Must have columns: ['High', 'Low', 'Open', 'Close']
+                 Must have columns: ['High', 'Low', 'Open', 'Close', 'Date']
     
     Returns:
         List of indices where Inside Bar patterns are detected
@@ -25,7 +26,10 @@ def detect_inside_bar(data_1h: pd.DataFrame) -> List[int]:
     inside_bars = []
     
     if len(data_1h) < 2:
+        logger.debug("Insufficient data for Inside Bar detection (need at least 2 candles)")
         return inside_bars
+    
+    logger.info(f"🔍 Starting Inside Bar detection scan on {len(data_1h)} 1-hour candles")
     
     for i in range(2, len(data_1h)):
         # Check if current candle is inside the previous candle (i-1)
@@ -34,9 +38,54 @@ def detect_inside_bar(data_1h: pd.DataFrame) -> List[int]:
         prev_high = data_1h['High'].iloc[i-1]
         prev_low = data_1h['Low'].iloc[i-1]
         
-        # Inside bar condition: current high < prev high AND current low > prev low
-        if current_high < prev_high and current_low > prev_low:
+        # Get timestamps for logging
+        current_time = data_1h['Date'].iloc[i] if 'Date' in data_1h.columns else f"Candle_{i}"
+        prev_time = data_1h['Date'].iloc[i-1] if 'Date' in data_1h.columns else f"Candle_{i-1}"
+        
+        # Log reference candle (previous candle)
+        if i == 2:
+            logger.info(f"📊 Reference candle: {prev_time} => High: {prev_high:.2f}, Low: {prev_low:.2f}")
+        
+        # Inside bar condition: 
+        # The CURRENT candle (i) must be COMPLETELY inside the PREVIOUS candle (i-1)
+        # This means:
+        # - Current high MUST BE LESS than previous high (strictly <, not <=)
+        # - Current low MUST BE GREATER than previous low (strictly >, not >=)
+        # Both conditions must be true simultaneously
+        
+        high_check = current_high < prev_high  # Strictly less
+        low_check = current_low > prev_low     # Strictly greater
+        is_inside = high_check and low_check
+        
+        logger.debug(
+            f"Candle at {current_time} => "
+            f"High: {current_high:.2f} {'< ' if high_check else '>= '} {prev_high:.2f} (ref) | "
+            f"Low: {current_low:.2f} {'> ' if low_check else '<= '} {prev_low:.2f} (ref)"
+        )
+        
+        if is_inside:
+            logger.info(
+                f"✅ Inside Bar detected at {current_time} | "
+                f"High: {current_high:.2f} < {prev_high:.2f}, Low: {current_low:.2f} > {prev_low:.2f} | "
+                f"Within range: {prev_low:.2f} - {prev_high:.2f}"
+            )
             inside_bars.append(i)
+        else:
+            # Log detailed reason if not inside
+            if not high_check and not low_check:
+                reason = f"High {current_high:.2f} >= Ref {prev_high:.2f} AND Low {current_low:.2f} <= Ref {prev_low:.2f} (outside range)"
+            elif not high_check:
+                reason = f"High {current_high:.2f} >= Ref {prev_high:.2f} (must be < {prev_high:.2f})"
+            elif not low_check:
+                reason = f"Low {current_low:.2f} <= Ref {prev_low:.2f} (must be > {prev_low:.2f})"
+            else:
+                reason = "Unknown"
+            logger.debug(f"❌ Not an Inside Bar at {current_time}: {reason}")
+    
+    if inside_bars:
+        logger.info(f"🎯 Total Inside Bars detected: {len(inside_bars)} at indices: {inside_bars}")
+    else:
+        logger.debug(f"🔍 No Inside Bar patterns found in {len(data_1h)} candles")
     
     return inside_bars
 
@@ -49,6 +98,7 @@ def confirm_breakout(
 ) -> Optional[str]:
     """
     Confirm breakout on 15-minute timeframe with volume validation.
+    Checks up to the last 5 candles for breakout confirmation.
     
     Args:
         data_15m: DataFrame with OHLCV data for 15-minute timeframe
@@ -65,24 +115,57 @@ def confirm_breakout(
     if len(data_15m) < 5:
         return None
     
+    # Get last 5 candles for confirmation check
+    recent = data_15m.tail(5)
+    
     # Calculate average volume over last 5 candles
-    avg_volume = data_15m['Volume'].tail(5).mean()
+    avg_volume = recent['Volume'].mean()
     volume_threshold = avg_volume * volume_threshold_multiplier
     
-    # Check for breakout from most recent candle
-    latest_close = data_15m['Close'].iloc[-1]
-    latest_high = data_15m['High'].iloc[-1]
-    latest_low = data_15m['Low'].iloc[-1]
-    latest_volume = data_15m['Volume'].iloc[-1]
+    logger.debug(
+        f"🔍 Checking breakout on {len(recent)} recent 15m candles | "
+        f"Range: {range_low:.2f} - {range_high:.2f} | "
+        f"Volume threshold: {volume_threshold:.0f} (avg: {avg_volume:.0f} × {volume_threshold_multiplier})"
+    )
     
-    # Bullish breakout (Call option)
-    if latest_close > range_high and latest_volume > volume_threshold:
-        return "CE"
+    # Check each of the last 5 candles for breakout
+    # Start from oldest to newest (first valid breakout wins)
+    for i in range(len(recent)):
+        close = recent['Close'].iloc[i]
+        high = recent['High'].iloc[i]
+        low = recent['Low'].iloc[i]
+        vol = recent['Volume'].iloc[i]
+        
+        # Get timestamp for logging
+        candle_time = recent['Date'].iloc[i] if 'Date' in recent.columns else f"Candle_{i}"
+        
+        # Bullish breakout (Call option) - close above range high with volume confirmation
+        if close > range_high and vol > volume_threshold:
+            logger.info(
+                f"✅ Bullish breakout (CE) confirmed at {candle_time} | "
+                f"Close: {close:.2f} > Range High: {range_high:.2f} | "
+                f"Volume: {vol:.0f} > Threshold: {volume_threshold:.0f}"
+            )
+            return "CE"
+        
+        # Bearish breakout (Put option) - close below range low with volume confirmation
+        elif close < range_low and vol > volume_threshold:
+            logger.info(
+                f"✅ Bearish breakout (PE) confirmed at {candle_time} | "
+                f"Close: {close:.2f} < Range Low: {range_low:.2f} | "
+                f"Volume: {vol:.0f} > Threshold: {volume_threshold:.0f}"
+            )
+            return "PE"
+        
+        # Log why this candle didn't trigger breakout
+        logger.debug(
+            f"Candle at {candle_time} | "
+            f"Close: {close:.2f}, Volume: {vol:.0f} | "
+            f"Range check: {range_low:.2f} <= Close <= {range_high:.2f}, "
+            f"Volume check: {vol:.0f} <= {volume_threshold:.0f}"
+        )
     
-    # Bearish breakout (Put option)
-    elif latest_close < range_low and latest_volume > volume_threshold:
-        return "PE"
-    
+    logger.debug("❌ No breakout confirmed in last 5 15m candles")
     return None
 
 
@@ -162,16 +245,75 @@ def check_for_signal(
             'reason': signal generation reason
         }
     """
+    # Validate data sufficiency
+    if data_1h.empty or data_15m.empty:
+        logger.warning("Empty dataframes provided to check_for_signal")
+        return None
+    
+    # Ensure we have enough 1H data for Inside Bar detection
+    # Need at least 20 candles for reliable pattern detection
+    if len(data_1h) < 20:
+        logger.warning(f"Insufficient 1H data ({len(data_1h)} candles). Need at least 20 candles. Skipping signal check.")
+        return None
+    
+    # Ensure we have enough 15m data for breakout confirmation
+    # Need at least 5 candles for volume confirmation
+    if len(data_15m) < 5:
+        logger.warning(f"Insufficient 15m data ({len(data_15m)} candles). Need at least 5 candles. Skipping signal check.")
+        return None
+    
     # Detect Inside Bar patterns
     inside_bars = detect_inside_bar(data_1h)
     
     if not inside_bars:
+        logger.debug(f"No Inside Bar patterns detected in {len(data_1h)} 1H candles")
         return None
+    
+    logger.debug(f"Found {len(inside_bars)} Inside Bar pattern(s)")
     
     # Get the most recent Inside Bar
     latest_inside_bar_idx = inside_bars[-1]
-    range_high = data_1h['High'].iloc[latest_inside_bar_idx - 1]
-    range_low = data_1h['Low'].iloc[latest_inside_bar_idx - 1]
+    
+    # IMPORTANT: Inside Bar is at index 'latest_inside_bar_idx'
+    # The reference candle (parent) is at 'latest_inside_bar_idx - 1'
+    # The range comes from the reference candle (the one that contains the inside bar)
+    inside_bar_candle = data_1h.iloc[latest_inside_bar_idx]
+    reference_candle = data_1h.iloc[latest_inside_bar_idx - 1]
+    
+    # Extract values
+    inside_bar_high = inside_bar_candle['High']
+    inside_bar_low = inside_bar_candle['Low']
+    range_high = reference_candle['High']  # Parent candle's high
+    range_low = reference_candle['Low']    # Parent candle's low
+    
+    # Get timestamps for logging
+    inside_bar_time = inside_bar_candle['Date'] if 'Date' in inside_bar_candle.index else f"Index_{latest_inside_bar_idx}"
+    ref_time = reference_candle['Date'] if 'Date' in reference_candle.index else f"Index_{latest_inside_bar_idx - 1}"
+    
+    # Format timestamps for display
+    if hasattr(inside_bar_time, 'strftime'):
+        inside_bar_time_str = inside_bar_time.strftime("%Y-%m-%d %H:%M:%S IST")
+    else:
+        inside_bar_time_str = str(inside_bar_time)
+    if hasattr(ref_time, 'strftime'):
+        ref_time_str = ref_time.strftime("%Y-%m-%d %H:%M:%S IST")
+    else:
+        ref_time_str = str(ref_time)
+    
+    logger.info(
+        f"📊 Using most recent Inside Bar at {inside_bar_time_str} | "
+        f"Reference candle: {ref_time_str} | "
+        f"Inside Bar Range: {inside_bar_low:.2f} - {inside_bar_high:.2f} | "
+        f"Breakout range (from reference): {range_low:.2f} - {range_high:.2f}"
+    )
+    
+    # Verify the inside bar logic is correct
+    if not (inside_bar_high < range_high and inside_bar_low > range_low):
+        logger.error(
+            f"⚠️ WARNING: Inside Bar validation failed! "
+            f"Inside Bar High ({inside_bar_high:.2f}) should be < Ref High ({range_high:.2f}) AND "
+            f"Inside Bar Low ({inside_bar_low:.2f}) should be > Ref Low ({range_low:.2f})"
+        )
     
     # Check for breakout confirmation
     direction = confirm_breakout(
@@ -182,13 +324,23 @@ def check_for_signal(
     )
     
     if direction is None:
+        logger.debug(
+            f"🔍 No breakout confirmed in {len(data_15m)} 15m candles | "
+            f"Range: {range_low:.2f} - {range_high:.2f}"
+        )
         return None
+    
+    logger.info(
+        f"✅ Breakout confirmed: {direction} | "
+        f"Range: {range_low:.2f} - {range_high:.2f}"
+    )
     
     # Get current price for strike calculation
     current_nifty_price = data_15m['Close'].iloc[-1]
     
-    # Calculate strike (using ATM for now)
-    strike = calculate_strike_price(current_nifty_price, direction, atm_offset=0)
+    # Calculate strike with ATM offset from config
+    atm_offset = config.get('atm_offset', 0)
+    strike = calculate_strike_price(current_nifty_price, direction, atm_offset=atm_offset)
     
     # For this system, entry price would be fetched from broker
     # Placeholder: use a reasonable estimate

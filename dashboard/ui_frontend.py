@@ -467,6 +467,172 @@ if tab == "Dashboard":
 
     st.divider()
 
+    # Strategy Debug Information Section
+    st.divider()
+    st.subheader("🔍 Strategy Debug - Inside Bar Detection")
+    
+    # Try to run a quick strategy check to show current status
+    if st.session_state.market_data_provider is not None and st.session_state.live_runner is not None:
+        try:
+            # Get latest market data
+            data_1h = st.session_state.market_data_provider.get_1h_data(
+                window_hours=st.session_state.live_runner.config.get('market_data', {}).get('data_window_hours_1h', 48)
+            )
+            data_15m = st.session_state.market_data_provider.get_15m_data(
+                window_hours=st.session_state.live_runner.config.get('market_data', {}).get('data_window_hours_15m', 12)
+            )
+            
+            if not data_1h.empty and not data_15m.empty:
+                # Show data availability
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("1H Candles Available", len(data_1h))
+                with col2:
+                    st.metric("15m Candles Available", len(data_15m))
+                
+                # Detect Inside Bars and show results
+                from engine.strategy_engine import detect_inside_bar
+                inside_bars = detect_inside_bar(data_1h)
+                
+                # Create a set for quick lookup
+                inside_bar_set = set(inside_bars)
+                
+                # Show recent candles with Inside Bar status
+                st.write("**Recent 1H Candles Check (Last 10 - Most Recent First):**")
+                recent_count = min(10, len(data_1h))
+                
+                # Get last N candles and reverse to show most recent first
+                recent_data = data_1h.tail(recent_count)
+                
+                # Create a more readable display - iterate backwards (most recent first)
+                display_data = []
+                for i in range(len(recent_data) - 1, -1, -1):  # Start from most recent (last row)
+                    # i is position in recent_data (0-based from tail)
+                    # Original DataFrame index = len(data_1h) - recent_count + i
+                    original_idx = len(data_1h) - recent_count + i
+                    
+                    # Format time in IST (assuming Date is already in IST after conversion)
+                    time_val = recent_data.iloc[i]['Date'] if 'Date' in recent_data.columns else f"Row_{original_idx}"
+                    if isinstance(time_val, pd.Timestamp) or hasattr(time_val, 'strftime'):
+                        try:
+                            # Format as IST time string
+                            time_str = time_val.strftime("%Y-%m-%d %H:%M:%S IST") if hasattr(time_val, 'strftime') else str(time_val)
+                        except:
+                            time_str = str(time_val)
+                    else:
+                        time_str = str(time_val)
+                    
+                    row_data = {
+                        'Row': original_idx,
+                        'Time (IST)': time_str,
+                        'High': f"{recent_data.iloc[i]['High']:.2f}",
+                        'Low': f"{recent_data.iloc[i]['Low']:.2f}",
+                        'Close': f"{recent_data.iloc[i]['Close']:.2f}",
+                    }
+                    
+                    # Check if this is an inside bar (using original DataFrame index)
+                    # Note: Inside bar detection requires index >= 2 (needs at least previous candle)
+                    is_inside = original_idx in inside_bar_set and original_idx >= 2
+                    if is_inside:
+                        row_data['Status'] = '✅ Inside Bar'
+                        # Get reference candle info (previous candle at original_idx - 1)
+                        if original_idx > 0:
+                            ref_high = data_1h['High'].iloc[original_idx - 1]
+                            ref_low = data_1h['Low'].iloc[original_idx - 1]
+                            current_high = recent_data.iloc[i]['High']
+                            current_low = recent_data.iloc[i]['Low']
+                            # Verify inside bar logic
+                            row_data['Reference Range'] = f"{ref_low:.2f} - {ref_high:.2f}"
+                            row_data['Inside Check'] = f"✓ High {current_high:.2f} < {ref_high:.2f} ✓ Low {current_low:.2f} > {ref_low:.2f}"
+                        else:
+                            row_data['Reference Range'] = 'N/A'
+                            row_data['Inside Check'] = 'N/A'
+                    else:
+                        row_data['Status'] = '❌ Not Inside'
+                        # Still show reference range for context
+                        if original_idx > 0:
+                            ref_high = data_1h['High'].iloc[original_idx - 1]
+                            ref_low = data_1h['Low'].iloc[original_idx - 1]
+                            current_high = recent_data.iloc[i]['High']
+                            current_low = recent_data.iloc[i]['Low']
+                            # Show detailed reason why it's not inside
+                            if current_high >= ref_high and current_low <= ref_low:
+                                row_data['Reference Range'] = f"{ref_low:.2f} - {ref_high:.2f}"
+                                row_data['Inside Check'] = f"✗ High {current_high:.2f} >= {ref_high:.2f} ✗ Low {current_low:.2f} <= {ref_low:.2f}"
+                            elif current_high >= ref_high:
+                                row_data['Reference Range'] = f"{ref_low:.2f} - {ref_high:.2f}"
+                                row_data['Inside Check'] = f"✗ High {current_high:.2f} >= {ref_high:.2f} (must be < {ref_high:.2f})"
+                            elif current_low <= ref_low:
+                                row_data['Reference Range'] = f"{ref_low:.2f} - {ref_high:.2f}"
+                                row_data['Inside Check'] = f"✗ Low {current_low:.2f} <= {ref_low:.2f} (must be > {ref_low:.2f})"
+                            else:
+                                # This shouldn't happen if logic is correct, but log it
+                                row_data['Reference Range'] = f"{ref_low:.2f} - {ref_high:.2f}"
+                                row_data['Inside Check'] = "✓ High ✓ Low (unexpected - check logic)"
+                        else:
+                            row_data['Reference Range'] = '—'
+                            row_data['Inside Check'] = 'No reference'
+                    
+                    display_data.append(row_data)
+                
+                # Display DataFrame with most recent first
+                display_df = pd.DataFrame(display_data)
+                st.dataframe(display_df, use_container_width=True, hide_index=True)
+                
+                if inside_bars:
+                    # Get the most recent Inside Bar (last in list means highest index)
+                    latest_idx = inside_bars[-1]
+                    range_high = data_1h['High'].iloc[latest_idx - 1]
+                    range_low = data_1h['Low'].iloc[latest_idx - 1]
+                    inside_bar_time = data_1h['Date'].iloc[latest_idx] if 'Date' in data_1h.columns else f"Index_{latest_idx}"
+                    ref_time = data_1h['Date'].iloc[latest_idx - 1] if 'Date' in data_1h.columns else f"Index_{latest_idx - 1}"
+                    
+                    st.success(f"✅ Inside Bar Detected! ({len(inside_bars)} total) | **Most Recent:** {inside_bar_time}")
+                    
+                    # Show Inside Bar details
+                    st.write("**Most Recent Inside Bar Details:**")
+                    details_col1, details_col2 = st.columns(2)
+                    with details_col1:
+                        st.write(f"📊 **Inside Bar Time:** {inside_bar_time}")
+                        st.write(f"📊 **Reference Candle:** {ref_time}")
+                        st.write(f"📈 **Breakout Range:** {range_low:.2f} - {range_high:.2f}")
+                    with details_col2:
+                        st.write(f"🔢 **Inside Bar High:** {data_1h['High'].iloc[latest_idx]:.2f}")
+                        st.write(f"🔢 **Inside Bar Low:** {data_1h['Low'].iloc[latest_idx]:.2f}")
+                        st.write(f"📍 **All Inside Bar Indices:** {inside_bars}")
+                    
+                    # Check for breakout
+                    st.write("**Breakout Status:**")
+                    from engine.strategy_engine import confirm_breakout
+                    direction = confirm_breakout(data_15m, range_high, range_low, volume_threshold_multiplier=1.0)
+                    
+                    if direction:
+                        st.success(f"✅ Breakout Confirmed: {direction} (Call Option)" if direction == "CE" else f"✅ Breakout Confirmed: {direction} (Put Option)")
+                        st.write(f"**Current 15m Close:** {data_15m['Close'].iloc[-1]:.2f}")
+                        st.write(f"**Range High:** {range_high:.2f} | **Range Low:** {range_low:.2f}")
+                    else:
+                        st.info("⏳ Waiting for breakout confirmation...")
+                        current_close = data_15m['Close'].iloc[-1]
+                        if current_close > range_high:
+                            st.write(f"🔺 Above range: {current_close:.2f} > {range_high:.2f} (need volume confirmation)")
+                        elif current_close < range_low:
+                            st.write(f"🔻 Below range: {current_close:.2f} < {range_low:.2f} (need volume confirmation)")
+                        else:
+                            st.write(f"📊 Within range: {range_low:.2f} ≤ {current_close:.2f} ≤ {range_high:.2f}")
+                else:
+                    st.info("🔍 No Inside Bar patterns detected in current 1H data")
+                    st.caption("💡 Inside Bar requires: candle high < previous high AND candle low > previous low")
+                st.caption("💡 This information updates when you refresh the page or auto-refresh is enabled")
+            else:
+                st.warning("⚠️ Insufficient market data. Please wait for data to load.")
+        except Exception as e:
+            st.error(f"❌ Error checking strategy status: {e}")
+            logger.exception(e)
+    else:
+        st.info("ℹ️ Market data provider or live runner not available")
+    
+    st.divider()
+    
     # Active Trades Section
     st.subheader("📊 Active Trades")
     active_signals = st.session_state.signal_handler.get_active_signals()
