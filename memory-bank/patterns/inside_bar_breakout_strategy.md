@@ -76,6 +76,27 @@ strategy:
    - Combines all logic into single workflow
    - Returns signal dictionary or None
 
+### Trade Management Helpers (`engine/trade_management.py`)
+
+1. **detect_signal_candle(h1)**
+   - Wraps Inside Bar detection to produce a structured `Signal` object with range metadata
+2. **breakout_side(h1_close, signal)**
+   - Confirms breakout direction and annotates the active signal
+3. **eligible_to_trade(context)**
+   - Applies pre-trade filters (gap, IV band, bid-ask spread, ATR threshold)
+4. **pick_option(symbol, spot, side)**
+   - Selects ATM weekly option contract (rounded to nearest 50) and expiry
+5. **compute_lots(acct_risk, entry_premium)**
+   - Derives lot count based on risk budget and option stop distance
+6. **initial_sl(entry_premium)**
+   - Sets default stop at 65% of entry premium (35% risk)
+7. **update_trailing(context, entry_premium, cur_premium, atr, swings, iv)**
+   - Raises trailing stop using ATR, swing lows/highs, and IV adjustments
+8. **time_expiry_exit(now, is_expiry_day, premium, position)**
+   - Issues time-based or premium-decay exits (expiry cutoff, EOD flush)
+9. **manage_trade_tick()**
+   - Orchestrates trailing updates and exit triggers using registered `TradeState` and `TradeSnapshot`
+
 ## When to Use
 
 - **Market Conditions**: Range-bound markets with clear consolidation periods

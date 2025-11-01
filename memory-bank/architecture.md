@@ -12,6 +12,7 @@ The NIFTY Options Algo Trading System is a secure, cloud-ready algorithmic tradi
 - **trade_logger.py**: Comprehensive trade logging to CSV format
 - **broker_connector.py**: Abstract broker interface supporting multiple broker APIs (Angel One, Fyers)
 - **backtest_engine.py**: Historical backtesting framework with trade simulation
+- **trade_management.py**: Reusable helpers for signal qualification, option selection, position sizing, trailing stops, and exit decisions
 
 ### 2. Dashboard (`dashboard/`)
 - **ui_frontend.py**: Main Streamlit application with authentication
